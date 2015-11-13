@@ -25,6 +25,7 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.text.Collator;
 import java.text.Normalizer;
 import java.util.*;
@@ -32,7 +33,6 @@ import net.pms.Messages;
 import net.pms.PMS;
 import net.pms.configuration.DownloadPlugins;
 import net.pms.configuration.MapFileConfiguration;
-import net.pms.configuration.PmsConfiguration;
 import net.pms.configuration.RendererConfiguration;
 import net.pms.dlna.virtual.VirtualFolder;
 import net.pms.dlna.virtual.VirtualVideoAction;
@@ -40,8 +40,12 @@ import net.pms.external.AdditionalFolderAtRoot;
 import net.pms.external.AdditionalFoldersAtRoot;
 import net.pms.external.ExternalFactory;
 import net.pms.external.ExternalListener;
+import net.pms.formats.Format;
 import net.pms.newgui.IFrame;
+import net.pms.util.CodeDb;
 import net.pms.util.FileUtil;
+import net.pms.util.FileWatcher;
+import net.pms.util.ProcessUtil;
 import org.apache.commons.configuration.ConfigurationException;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
@@ -53,16 +57,17 @@ import xmlwise.XmlParseException;
 
 public class RootFolder extends DLNAResource {
 	private static final Logger LOGGER = LoggerFactory.getLogger(RootFolder.class);
-	private static final PmsConfiguration configuration = PMS.getConfiguration();
 	private boolean running;
 	private FolderLimit lim;
 	private MediaMonitor mon;
-	private RecentlyPlayed last;
+	private Playlist last;
 	private ArrayList<String> tags;
+	private ArrayList<DLNAResource> webFolders;
 
 	public RootFolder(ArrayList<String> tags) {
 		setIndexId(0);
 		this.tags = tags;
+		webFolders = new ArrayList<>();
 	}
 
 	public RootFolder() {
@@ -105,13 +110,16 @@ public class RootFolder extends DLNAResource {
 			return;
 		}
 
-		if (!configuration.isHideRecentlyPlayedFolder(tags)) {
-			last = new RecentlyPlayed();
+		if (!configuration.isHideRecentlyPlayedFolder()) {
+			last = new Playlist(Messages.getString("VirtualFolder.1"),
+				PMS.getConfiguration().getDataFile("UMS.last"),
+				PMS.getConfiguration().getInt("last_play_limit", 250),
+				Playlist.PERMANENT|Playlist.AUTOSAVE);
 			addChild(last);
 		}
 
-		if (!configuration.isHideNewMediaFolder(tags)) {
-			String m = (String) configuration.getFoldersMonitored();
+		if (!configuration.isHideNewMediaFolder()) {
+			String m = configuration.getFoldersMonitored();
 			if (!StringUtils.isEmpty(m)) {
 				String[] tmp = m.split(",");
 				File[] dirs = new File[tmp.length];
@@ -123,9 +131,17 @@ public class RootFolder extends DLNAResource {
 			}
 		}
 
-		if (configuration.getFolderLimit()) {
+		if (configuration.getFolderLimit() && getDefaultRenderer() != null && getDefaultRenderer().isLimitFolders()) {
 			lim = new FolderLimit();
 			addChild(lim);
+		}
+
+		if (configuration.isDynamicPls()) {
+			addChild(PMS.get().getDynamicPls());
+			if (!configuration.isHideSavedPlaylistFolder()) {
+				File plsdir = new File(configuration.getDynamicPlsSavePath());
+				addChild(new RealFile(plsdir, Messages.getString("VirtualFolder.3")));
+			}
 		}
 
 		for (DLNAResource r : getConfiguredFolders(tags)) {
@@ -136,16 +152,7 @@ public class RootFolder extends DLNAResource {
 			addChild(r);
 		}
 
-		if (configuration.getSearchFolder()) {
-			SearchFolder sf = new SearchFolder("Search disc folders", new FileSearch(getConfiguredFolders(null)));
-			addChild(sf);
-		}
-
-		String webConfPath = configuration.getWebConfPath();
-		File webConf = new File(webConfPath);
-		if (webConf.exists() && configuration.getExternalNetwork() && !configuration.isHideWebFolder(tags)) {
-			addWebFolder(webConf);
-		}
+		loadWebConf();
 
 		if (Platform.isMac() && configuration.isShowIphotoLibrary()) {
 			DLNAResource iPhotoRes = getiPhotoFolder();
@@ -179,7 +186,7 @@ public class RootFolder extends DLNAResource {
 			addChild(r);
 		}
 
-		if (!configuration.getHideVideoSettings(tags)) {
+		if (!configuration.getHideVideoSettings()) {
 			addAdminFolder();
 		}
 
@@ -219,7 +226,7 @@ public class RootFolder extends DLNAResource {
 		running = false;
 	}
 
-	private synchronized void scan(DLNAResource resource) {
+	private void scan(DLNAResource resource) {
 		if (running) {
 			for (DLNAResource child : resource.getChildren()) {
 				if (running && child.allowScan()) {
@@ -239,7 +246,7 @@ public class RootFolder extends DLNAResource {
 						child.refreshChildren();
 					} else {
 						if (child instanceof DVDISOFile || child instanceof DVDISOTitle) { // ugly hack
-							child.resolve();
+							child.syncResolve();
 						}
 						child.discoverChildren();
 						child.analyzeChildren(-1);
@@ -261,17 +268,45 @@ public class RootFolder extends DLNAResource {
 
 	private List<RealFile> getConfiguredFolders(ArrayList<String> tags) {
 		List<RealFile> res = new ArrayList<>();
-		File[] files = PMS.get().getSharedFoldersArray(false, tags);
+		File[] files = PMS.get().getSharedFoldersArray(false, tags, configuration);
+		String s = configuration.getFoldersIgnored(tags);
+		String[] skips = null;
+
+		if (s != null) {
+			skips = s.split(",");
+		}
 
 		if (files == null || files.length == 0) {
 			files = File.listRoots();
 		}
 
 		for (File f : files) {
+			if (skipPath(skips, f.getAbsolutePath().toLowerCase())) {
+				continue;
+			}
 			res.add(new RealFile(f));
 		}
 
+		if (configuration.getSearchFolder()) {
+			SearchFolder sf = new SearchFolder(Messages.getString("PMS.143"), new FileSearch(res));
+			addChild(sf);
+		}
+
 		return res;
+	}
+
+	private boolean skipPath(String[] skips, String path) {
+		for (String s : skips) {
+			if (StringUtils.isBlank(s)) {
+				continue;
+			}
+
+			if (path.contains(s.toLowerCase())) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	private List<DLNAResource> getVirtualFolders(ArrayList<String> tags) {
@@ -287,80 +322,108 @@ public class RootFolder extends DLNAResource {
 		return res;
 	}
 
+	private void loadWebConf() {
+		for (DLNAResource d : webFolders) {
+			getChildren().remove(d);
+		}
+		webFolders.clear();
+		String webConfPath = configuration.getWebConfPath();
+		File webConf = new File(webConfPath);
+		if (webConf.exists() && configuration.getExternalNetwork() && !configuration.isHideWebFolder(tags)) {
+			addWebFolder(webConf);
+			FileWatcher.add(new FileWatcher.Watch(webConf.getPath(), rootWatcher, this, RELOAD_WEB_CONF));
+		}
+		setLastModified(1);
+	}
+
 	private void addWebFolder(File webConf) {
-		if (webConf.exists()) {
-			try {
-				try (LineNumberReader br = new LineNumberReader(new InputStreamReader(new FileInputStream(webConf), "UTF-8"))) {
-					String line;
-					while ((line = br.readLine()) != null) {
-						line = line.trim();
+		try {
+			try (LineNumberReader br = new LineNumberReader(new InputStreamReader(new FileInputStream(webConf), StandardCharsets.UTF_8))) {
+				String line;
+				while ((line = br.readLine()) != null) {
+					line = line.trim();
 
-						if (line.length() > 0 && !line.startsWith("#") && line.indexOf('=') > -1) {
-							String key = line.substring(0, line.indexOf('='));
-							String value = line.substring(line.indexOf('=') + 1);
-							String[] keys = parseFeedKey(key);
+					if (line.length() > 0 && !line.startsWith("#") && line.indexOf('=') > -1) {
+						String key = line.substring(0, line.indexOf('='));
+						String value = line.substring(line.indexOf('=') + 1);
+						String[] keys = parseFeedKey(key);
 
-							try {
-								if (
-									keys[0].equals("imagefeed") ||
-									keys[0].equals("audiofeed") ||
-									keys[0].equals("videofeed") ||
-									keys[0].equals("audiostream") ||
-									keys[0].equals("videostream")
-								) {
-									String[] values = parseFeedValue(value);
-									DLNAResource parent = null;
+						try {
+							if (
+								keys[0].equals("imagefeed") ||
+								keys[0].equals("audiofeed") ||
+								keys[0].equals("videofeed") ||
+								keys[0].equals("audiostream") ||
+								keys[0].equals("videostream")
+							) {
+								String[] values = parseFeedValue(value);
+								DLNAResource parent = null;
 
-									if (keys[1] != null) {
-										StringTokenizer st = new StringTokenizer(keys[1], ",");
-										DLNAResource currentRoot = this;
+								if (keys[1] != null) {
+									StringTokenizer st = new StringTokenizer(keys[1], ",");
+									DLNAResource currentRoot = this;
 
-										while (st.hasMoreTokens()) {
-											String folder = st.nextToken();
-											parent = currentRoot.searchByName(folder);
+									while (st.hasMoreTokens()) {
+										String folder = st.nextToken();
+										parent = currentRoot.searchByName(folder);
 
-											if (parent == null) {
-												parent = new VirtualFolder(folder, "");
-												currentRoot.addChild(parent);
+										if (parent == null) {
+											parent = new VirtualFolder(folder, "");
+											if (currentRoot == this) {
+												// parent is a top-level web folder
+												webFolders.add(parent);
 											}
-
-											currentRoot = parent;
+											currentRoot.addChild(parent);
 										}
-									}
 
-									if (parent == null) {
-										parent = this;
-									}
-									switch (keys[0]) {
-										case "imagefeed":
-											parent.addChild(new ImagesFeed(values[0]));
-											break;
-										case "videofeed":
-											parent.addChild(new VideosFeed(values[0]));
-											break;
-										case "audiofeed":
-											parent.addChild(new AudiosFeed(values[0]));
-											break;
-										case "audiostream":
-											parent.addChild(new WebAudioStream(values[0], values[1], values[2]));
-											break;
-										case "videostream":
-											parent.addChild(new WebVideoStream(values[0], values[1], values[2]));
-											break;
+										currentRoot = parent;
 									}
 								}
-							} catch (ArrayIndexOutOfBoundsException e) {
-								// catch exception here and go with parsing
-								LOGGER.info("Error at line " + br.getLineNumber() + " of WEB.conf: " + e.getMessage());
-								LOGGER.debug(null, e);
+
+								if (parent == null) {
+									parent = this;
+								}
+								if (keys[0].endsWith("stream")) {
+									int type = keys[0].startsWith("audio") ? Format.AUDIO : Format.VIDEO;
+									DLNAResource playlist = PlaylistFolder.getPlaylist(values[0], values[1], type);
+									if (playlist != null) {
+										parent.addChild(playlist);
+										continue;
+									}
+								}
+								switch (keys[0]) {
+									case "imagefeed":
+										parent.addChild(new ImagesFeed(values[0]));
+										break;
+									case "videofeed":
+										parent.addChild(new VideosFeed(values[0]));
+										break;
+									case "audiofeed":
+										parent.addChild(new AudiosFeed(values[0]));
+										break;
+									case "audiostream":
+										parent.addChild(new WebAudioStream(values[0], values[1], values[2]));
+										break;
+									case "videostream":
+										parent.addChild(new WebVideoStream(values[0], values[1], values[2]));
+										break;
+									default:
+										break;
+								}
 							}
+						} catch (ArrayIndexOutOfBoundsException e) {
+							// catch exception here and go with parsing
+							LOGGER.info("Error at line " + br.getLineNumber() + " of WEB.conf: " + e.getMessage());
+							LOGGER.debug(null, e);
 						}
 					}
 				}
-			} catch (IOException e) {
-				LOGGER.info("Unexpected error in WEB.conf" + e.getMessage());
-				LOGGER.debug(null, e);
 			}
+		} catch (FileNotFoundException e) {
+			LOGGER.debug("Can't read web configuration file {}", e.getMessage());
+		} catch (IOException e) {
+			LOGGER.warn("Unexpected error in WEB.conf: " + e.getMessage());
+			LOGGER.debug("", e);
 		}
 	}
 
@@ -503,6 +566,7 @@ public class RootFolder extends DLNAResource {
 			try {
 				process = Runtime.getRuntime().exec("defaults read com.apple.iApps ApertureLibraries");
 				try (BufferedReader in = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+					// Every line entry is one aperture library. We want all of them as a dlna folder.
 					String line;
 					res = new VirtualFolder("Aperture libraries", null);
 
@@ -728,7 +792,7 @@ public class RootFolder extends DLNAResource {
 	 * This method does not support genius playlists and does not provide a
 	 * media library.
 	 *
-	 * @see RootFolder#getiTunesFile(boolean)
+	 * @see RootFolder#getiTunesFile()
 	 */
 	private DLNAResource getiTunesFolder() {
 		DLNAResource res = null;
@@ -871,7 +935,7 @@ public class RootFolder extends DLNAResource {
 										// Put the track into its album folder
 										{
 											if (!isCompilation) {
-												albumName += " – " + artistName;
+												albumName += " - " + artistName;
 											}
 
 											VirtualFolder individualAlbumFolder = null;
@@ -1050,10 +1114,13 @@ public class RootFolder extends DLNAResource {
 										ProcessBuilder pb = new ProcessBuilder(f.getAbsolutePath());
 										Process pid = pb.start();
 										InputStream is = pid.getInputStream();
-										InputStreamReader isr = new InputStreamReader(is);
-										BufferedReader br = new BufferedReader(isr);
-										while (br.readLine() != null) {
+										BufferedReader br;
+										try (InputStreamReader isr = new InputStreamReader(is)) {
+											br = new BufferedReader(isr);
+											while (br.readLine() != null) {
+											}
 										}
+										br.close();
 										pid.waitFor();
 									} catch (IOException | InterruptedException e) {
 									}
@@ -1099,35 +1166,15 @@ public class RootFolder extends DLNAResource {
 			});
 		}
 
-		// recently played mgmt
-		if (last != null) {
-			final List<DLNAResource> l = last.getList();
-			res.addChild(new VirtualFolder(Messages.getString("PMS.137"), null) {
-				@Override
-				public void discoverChildren() {
-					addChild(new VirtualVideoAction(Messages.getString("PMS.136"), true) {
-						@Override
-						public boolean enable() {
-							getParent().getChildren().clear();
-							l.clear();
-							last.update();
-							return true;
-						}
-					});
-					for (final DLNAResource r : l) {
-						addChild(new VirtualVideoAction(r.getName(), false) {
-							@Override
-							public boolean enable() {
-								getParent().getChildren().remove(this);
-								l.remove(r);
-								last.update();
-								return false;
-							}
-						});
-					}
-				}
-			});
-		}
+		// Reboot UMS
+		res.addChild(new VirtualVideoAction(Messages.getString("PMS.149"), true) {
+			@Override
+			public boolean enable() {
+				ProcessUtil.reboot();
+				// Reboot failed if we get here
+				return false;
+			}
+		});
 
 		addChild(res);
 	}
@@ -1140,10 +1187,29 @@ public class RootFolder extends DLNAResource {
 	private DLNAResource getVideoSettingsFolder() {
 		DLNAResource res = null;
 
-		if (!configuration.getHideVideoSettings(tags)) {
+		if (!configuration.getHideVideoSettings()) {
 			res = new VirtualFolder(Messages.getString("PMS.37"), null);
 			VirtualFolder vfSub = new VirtualFolder(Messages.getString("PMS.8"), null);
 			res.addChild(vfSub);
+
+			if (configuration.useCode() && !PMS.get().masterCodeValid() &&
+				StringUtils.isNotEmpty(PMS.get().codeDb().lookup(CodeDb.MASTER))) {
+				// if the master code is valid we don't add this
+				VirtualVideoAction vva = new VirtualVideoAction("MasterCode", true) {
+					@Override
+					public boolean enable() {
+						CodeEnter ce = (CodeEnter) getParent();
+						if (ce.validCode(this)) {
+							PMS.get().setMasterCode(ce);
+							return true;
+						}
+						return false;
+					}
+				};
+				CodeEnter ce1 = new CodeEnter(vva);
+				ce1.setCode(CodeDb.MASTER);
+				res.addChild(ce1);
+			}
 
 			res.addChild(new VirtualVideoAction(Messages.getString("PMS.3"), configuration.isMencoderNoOutOfSync()) {
 				@Override
@@ -1200,12 +1266,12 @@ public class RootFolder extends DLNAResource {
 				}
 			});
 
-			vfSub.addChild(new VirtualVideoAction(Messages.getString("MEncoderVideo.36"), configuration.isMencoderAssDefaultStyle()) {
+			vfSub.addChild(new VirtualVideoAction(Messages.getString("MEncoderVideo.36"), configuration.isUseEmbeddedSubtitlesStyle()) {
 				@Override
 				public boolean enable() {
-					boolean oldValue = configuration.isMencoderAssDefaultStyle();
+					boolean oldValue = configuration.isUseEmbeddedSubtitlesStyle();
 					boolean newValue = !oldValue;
-					configuration.setMencoderAssDefaultStyle(newValue);
+					configuration.setUseEmbeddedSubtitlesStyle(newValue);
 					return newValue;
 				}
 			});
@@ -1245,6 +1311,7 @@ public class RootFolder extends DLNAResource {
 					return true;
 				}
 			});
+
 			res.addChild(new VirtualVideoAction(Messages.getString("FoldTab.42"), configuration.isHideLiveSubtitlesFolder()) {
 				@Override
 				public boolean enable() {
@@ -1352,4 +1419,20 @@ public class RootFolder extends DLNAResource {
 	public ArrayList<String> getTags() {
 		return tags;
 	}
+
+	// Automatic reloading
+
+	public final static int RELOAD_WEB_CONF = 1;
+
+	public static final FileWatcher.Listener rootWatcher = new FileWatcher.Listener() {
+		@Override
+		public void notify(String filename, String event, FileWatcher.Watch watch, boolean isDir) {
+			RootFolder r = (RootFolder) watch.getItem();
+			if (r != null) {
+				if (watch.flag == RELOAD_WEB_CONF) {
+					r.loadWebConf();
+				}
+			}
+		}
+	};
 }

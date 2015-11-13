@@ -51,6 +51,7 @@ public class HTTPResource {
 	public static final String MPEG_TYPEMIME = "video/mpeg";
 	public static final String MP4_TYPEMIME = "video/mp4";
 	public static final String AVI_TYPEMIME = "video/avi";
+	public static final String DIVX_TYPEMIME = "video/x-divx";
 	public static final String WMV_TYPEMIME = "video/x-ms-wmv";
 	public static final String ASF_TYPEMIME = "video/x-ms-asf";
 	public static final String MATROSKA_TYPEMIME = "video/x-matroska";
@@ -61,6 +62,9 @@ public class HTTPResource {
 	public static final String TIFF_TYPEMIME = "image/tiff";
 	public static final String GIF_TYPEMIME = "image/gif";
 	public static final String BMP_TYPEMIME = "image/bmp";
+	public static final String THREEGPP_TYPEMIME = "video/3gpp";
+	public static final String THREEGPP2_TYPEMIME = "video/3gpp2";
+	public static final String MOV_TYPEMIME = "video/quicktime";
 	public HTTPResource() { }
 
 	/**
@@ -196,7 +200,6 @@ public class HTTPResource {
 		return bytes.toByteArray();
 	}
 
-
 	/**
 	 * Returns the supplied MIME type customized for the supplied media renderer according to the renderer's aliasing rules.
 	 * @param mimetype MIME type to customize.
@@ -241,5 +244,21 @@ public class HTTPResource {
 		}
 
 		return "MPEG_TS_SD_EU";
+	}
+
+	public final String getMPEG_TS_EULocalizedValue(int index, boolean isHD) {
+		String definition = "SD";
+		if (isHD) {
+			definition = "HD";
+		}
+
+		if (index == 1) {
+			return "MPEG_TS_" + definition + "_NA";
+		}
+		if (index == 2) {
+			return "MPEG_TS_" + definition + "_JP";
+		}
+
+		return "MPEG_TS_" + definition + "_EU";
 	}
 }

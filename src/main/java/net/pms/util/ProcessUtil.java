@@ -1,12 +1,39 @@
+/*
+ * Universal Media Server, for streaming any medias to DLNA
+ * compatible renderers based on the http://www.ps3mediaserver.org.
+ * Copyright (C) 2012 UMS developers.
+ *
+ * This program is a free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; version 2
+ * of the License only.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ */
+
 package net.pms.util;
 
+import com.sun.jna.Platform;
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.util.Arrays;
+import java.lang.management.ManagementFactory;
 import java.lang.reflect.Field;
+import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import net.pms.PMS;
 import net.pms.io.Gob;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -122,7 +149,7 @@ public class ProcessUtil {
 							p.exitValue();
 						} catch (IllegalThreadStateException itse) { // still running: nuke it
 							// kill -14 (ALRM) works (for MEncoder) and is less dangerous than kill -9
-							// so try that first 
+							// so try that first
 							if (!kill(pid, 14)) {
 								try {
 									// This is a last resort, so let's not be too eager
@@ -149,19 +176,30 @@ public class ProcessUtil {
 	}
 
 	// Run cmd and return combined stdout/stderr
-	public static String run(String... cmd) {
+	public static String run(int[] expectedExitCodes, String... cmd) {
 		try {
 			ProcessBuilder pb = new ProcessBuilder(cmd);
 			pb.redirectErrorStream(true);
 			Process p = pb.start();
-			BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()));
-			String line;
-			StringBuilder output = new StringBuilder();
-			while ((line = br.readLine()) != null) {
-				output.append(line).append("\n");
+			StringBuilder output;
+			try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+				String line;
+				output = new StringBuilder();
+				while ((line = br.readLine()) != null) {
+					output.append(line).append("\n");
+				}
 			}
 			p.waitFor();
-			if (p.exitValue() != 0) {
+			boolean expected = false;
+			if (expectedExitCodes != null) {
+				for (int expectedCode : expectedExitCodes) {
+					if (expectedCode == p.exitValue()) {
+						expected = true;
+						break;
+					}
+				}
+			}
+			if (!expected) {
 				LOGGER.debug("Warning: command {} returned {}", Arrays.toString(cmd), p.exitValue());
 			}
 			return output.toString();
@@ -169,5 +207,93 @@ public class ProcessUtil {
 			LOGGER.error("Error running command " + Arrays.toString(cmd), e);
 		}
 		return "";
+	}
+
+	public static String run(String... cmd) {
+		int[] zeroExpected = { 0 };
+		return run(zeroExpected, cmd);
+	}
+
+	// Whitewash any arguments not suitable to display in dbg messages
+	// and make one single printable string
+	public static String dbgWashCmds(String[] cmd) {
+		for(int i=0; i < cmd.length; i++) {
+			if(cmd[i].contains("headers")) {
+				cmd[i+1]= cmd[i+1].replaceAll("Authorization: [^\n]+\n", "Authorization: ****\n");
+				i++;
+				continue;
+			}
+		}
+		return StringUtils.join(cmd, " ");
+	}
+
+	// Rebooting
+
+	// Reboot UMS same as now
+	public static void reboot() {
+		reboot((ArrayList<String>)null, null, null);
+	}
+
+	// Reboot UMS same as now, adding these options
+	public static void reboot(String... UMSOptions) {
+		reboot(null, null, null, UMSOptions);
+	}
+
+	// Shutdown UMS and either reboot or run the given command (e.g. a script to restart UMS)
+	public static void reboot(ArrayList<String> cmd, Map<String,String> env, String startdir, String... UMSOptions) {
+		final ArrayList<String> reboot = getUMSCommand();
+		if (UMSOptions.length > 0) {
+			reboot.addAll(Arrays.asList(UMSOptions));
+		}
+		if (cmd == null) {
+			// We're doing a straight reboot
+			cmd = reboot;
+		} else {
+			// We're running a script that will eventually restart UMS
+			if (env == null) {
+				env = new HashMap<>();
+			}
+			// Tell the script how to restart UMS
+			env.put("RESTART_CMD", StringUtils.join(reboot, " "));
+			env.put("RESTART_DIR", System.getProperty("user.dir"));
+		}
+		if (startdir == null) {
+			startdir = System.getProperty("user.dir");
+		}
+
+		System.out.println("starting: " + StringUtils.join(cmd, " "));
+
+		final ProcessBuilder pb = new ProcessBuilder(cmd);
+		if (env != null) {
+			pb.environment().putAll(env);
+		}
+		pb.directory(new File(startdir));
+		System.out.println("in directory: " + pb.directory());
+		try {
+			pb.start();
+		} catch (Exception e) {
+			e.printStackTrace();
+			return;
+		}
+		System.exit(0);
+	}
+
+	// Reconstruct the command that started this jvm, including all options.
+	// See http://stackoverflow.com/questions/4159802/how-can-i-restart-a-java-application
+	//     http://stackoverflow.com/questions/1518213/read-java-jvm-startup-parameters-eg-xmx
+	public static ArrayList<String> getUMSCommand() {
+		ArrayList<String> reboot = new ArrayList<>();
+		reboot.add(StringUtil.quoteArg(
+			System.getProperty("java.home") + File.separator + "bin" + File.separator +
+			((Platform.isWindows() && System.console() == null) ? "javaw" : "java")));
+		for (String jvmArg : ManagementFactory.getRuntimeMXBean().getInputArguments()) {
+			reboot.add(StringUtil.quoteArg(jvmArg));
+		}
+		reboot.add("-cp");
+		reboot.add(ManagementFactory.getRuntimeMXBean().getClassPath());
+		// Could also use generic main discovery instead:
+		// see http://stackoverflow.com/questions/41894/0-program-name-in-java-discover-main-class
+		reboot.add(PMS.class.getName());
+		return reboot;
 	}
 }

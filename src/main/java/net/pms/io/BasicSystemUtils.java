@@ -29,6 +29,7 @@ import java.net.SocketException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import net.pms.Messages;
+import net.pms.PMS;
 import net.pms.newgui.LooksFrame;
 import net.pms.util.PropertiesUtil;
 import org.slf4j.Logger;
@@ -157,6 +158,16 @@ public class BasicSystemUtils implements SystemUtils {
 				}
 			});
 
+			if (PMS.getConfiguration().useWebInterface()) {
+				MenuItem webInterfaceItem = new MenuItem(Messages.getString("LooksFrame.29"));
+				webInterfaceItem.addActionListener(new ActionListener() {
+					@Override
+					public void actionPerformed(ActionEvent e) {
+						browseURI(PMS.get().getWebInterface().getUrl());
+					}
+				});
+				popup.add(webInterfaceItem);
+			}
 			popup.add(traceItem);
 			popup.add(defaultItem);
 
@@ -205,6 +216,20 @@ public class BasicSystemUtils implements SystemUtils {
 	public String[] getPingCommand(String hostAddress, int count, int packetSize) {
 		return new String[] { "ping", /* count */"-c", Integer.toString(count), /* size */
 				"-s", Integer.toString(packetSize), hostAddress };
+	}
+
+	public String parsePingLine(String line) {
+		int msPos = line.indexOf("ms");
+		String timeString = null;
+
+		if (msPos > -1) {
+			if (line.lastIndexOf('<', msPos) > -1){
+				timeString = "0.5";
+			} else {
+				timeString = line.substring(line.lastIndexOf('=', msPos) + 1, msPos).trim();
+			}
+		}
+		return timeString;
 	}
 
 	/**

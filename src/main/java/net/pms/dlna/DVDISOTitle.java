@@ -25,8 +25,6 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import net.pms.Messages;
-import net.pms.PMS;
-import net.pms.configuration.PmsConfiguration;
 import net.pms.configuration.RendererConfiguration;
 import net.pms.formats.FormatFactory;
 import net.pms.formats.v2.SubtitleType;
@@ -40,7 +38,6 @@ import org.slf4j.LoggerFactory;
 
 public class DVDISOTitle extends DLNAResource {
 	private static final Logger LOGGER = LoggerFactory.getLogger(DVDISOTitle.class);
-	private static final PmsConfiguration configuration = PMS.getConfiguration();
 	private File file;
 	private int title;
 	private long length;
@@ -218,7 +215,7 @@ public class DVDISOTitle extends DLNAResource {
 			getMedia().setDuration(d);
 		}
 		getMedia().setFrameRate(fps);
-		getMedia().setAspect(aspect);
+		getMedia().setAspectRatioDvdIso(aspect);
 		getMedia().setDvdtrack(title);
 		getMedia().setContainer("iso");
 		getMedia().setCodecV("mpeg2video");
@@ -280,7 +277,7 @@ public class DVDISOTitle extends DLNAResource {
 	public long length(RendererConfiguration mediaRenderer) {
 		// WDTV Live at least, needs a realistic size for stop/resume to works proberly. 2030879 = ((15000 + 256) * 1024 / 8 * 1.04) : 1.04 = overhead
 		int cbr_video_bitrate = getDefaultRenderer().getCBRVideoBitrate();
-		return (cbr_video_bitrate > 0) ? (long) (((cbr_video_bitrate + 256) * 1024 / 8 * 1.04) * getMedia().getDurationInSeconds()) : length();
+		return (cbr_video_bitrate > 0) ? (long) (((cbr_video_bitrate + 256) * 1024 / (double) 8 * 1.04) * getMedia().getDurationInSeconds()) : length();
 	}
 
 	@Override

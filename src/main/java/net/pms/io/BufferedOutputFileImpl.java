@@ -27,9 +27,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Timer;
 import java.util.TimerTask;
-import net.pms.Messages;
 import net.pms.PMS;
 import net.pms.configuration.PmsConfiguration;
+import net.pms.configuration.RendererConfiguration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -47,7 +47,7 @@ import org.slf4j.LoggerFactory;
  */
 public class BufferedOutputFileImpl extends OutputStream implements BufferedOutputFile {
 	private static final Logger LOGGER = LoggerFactory.getLogger(BufferedOutputFileImpl.class);
-	private static final PmsConfiguration configuration = PMS.getConfiguration();
+	private PmsConfiguration configuration;
 
 	/**
 	 * Initial size for the buffer in bytes.
@@ -70,11 +70,13 @@ public class BufferedOutputFileImpl extends OutputStream implements BufferedOutp
 	private boolean eof;
 	private long writeCount;
 	private byte buffer[];
-	private boolean forcefirst = (configuration.getTrancodeBlocksMultipleConnections() && configuration.getTrancodeKeepFirstConnections());
+	private boolean forcefirst;
 	private ArrayList<WaitBufferedInputStream> inputStreams;
 	private ProcessWrapper attachedThread;
 	private int secondread_minsize;
 	private Timer timer;
+	private boolean hidebuffer;
+	private boolean cleanup;
 	private boolean shiftScr;
 	private FileOutputStream debugOutput = null;
 	private boolean buffered = false;
@@ -82,6 +84,7 @@ public class BufferedOutputFileImpl extends OutputStream implements BufferedOutp
 	private double timeseek;
 	private double timeend;
 	private long packetpos = 0;
+	private final RendererConfiguration renderer;
 
 	/**
 	 * Try to increase the size of a memory buffer, while retaining its
@@ -175,6 +178,10 @@ public class BufferedOutputFileImpl extends OutputStream implements BufferedOutp
 	 * for the buffers dimensions and behavior.
 	 */
 	public BufferedOutputFileImpl(OutputParams params) {
+		// Use device-specific pms conf
+		configuration = PMS.getConfiguration(params);
+		this.renderer = params.mediaRenderer;
+		this.forcefirst = (configuration.getTrancodeBlocksMultipleConnections() && configuration.getTrancodeKeepFirstConnections());
 		this.minMemorySize = (int) (1048576 * params.minBufferSize);
 		this.maxMemorySize = (int) (1048576 * params.maxBufferSize);
 
@@ -193,8 +200,10 @@ public class BufferedOutputFileImpl extends OutputStream implements BufferedOutp
 		this.timeseek = params.timeseek;
 		this.timeend = params.timeend;
 		this.shiftScr = params.shift_scr;
+		this.hidebuffer = params.hidebuffer;
+		this.cleanup = params.cleanup;
 
-		if ((maxMemorySize > INITIAL_BUFFER_SIZE) && !configuration.initBufferMax()) {
+		if (maxMemorySize > INITIAL_BUFFER_SIZE) {
 			// Try to limit memory usage a bit.
 			// Start with a modest allocation initially, grow to max when needed later.
 			buffer = growBuffer(null, INITIAL_BUFFER_SIZE);
@@ -212,35 +221,15 @@ public class BufferedOutputFileImpl extends OutputStream implements BufferedOutp
 		}
 
 		inputStreams = new ArrayList<>();
-		timer = new Timer();
-
-		if (params.maxBufferSize > 15 && !params.hidebuffer) {
-			timer.schedule(new TimerTask() {
-				@Override
-				public void run() {
-					long rc = 0;
-
-					if (getCurrentInputStream() != null) {
-						rc = getCurrentInputStream().getReadCount();
-						PMS.get().getFrame().setReadValue(rc, "");
-					}
-
-					long space = (writeCount - rc);
-					LOGGER.trace("buffered: " + formatter.format(space) + " bytes / inputs: " + inputStreams.size());
-
-					// There are 1048576 bytes in a megabyte
-					long bufferInMBs = space / 1048576;
-
-					PMS.get().getFrame().setValue((int) (100 * space / maxMemorySize), formatter.format(bufferInMBs) + " " + Messages.getString("StatusTab.12"));
-				}
-			}, 0, 2000);
-		}
 	}
 
 	@Override
 	public void close() throws IOException {
 		LOGGER.trace("EOF");
 		eof = true;
+		if (cleanup) {
+			detachInputStream();
+		}
 	}
 
 	@Override
@@ -715,6 +704,9 @@ public class BufferedOutputFileImpl extends OutputStream implements BufferedOutp
 
 		if (eof && (writeCount - readCount) < len) {
 			cut = (int) (len - (writeCount - readCount));
+			if (cut < 0) {
+				cut = 0;
+			}
 		}
 
 		if (mb >= endOF - len) {
@@ -790,13 +782,41 @@ public class BufferedOutputFileImpl extends OutputStream implements BufferedOutp
 	}
 
 	@Override
-	public void attachThread(ProcessWrapper thread) {
+	public synchronized void attachThread(ProcessWrapper thread) {
 		if (attachedThread != null) {
 			throw new RuntimeException("BufferedOutputFile is already attached to a Thread: " + attachedThread);
 		}
 
 		LOGGER.debug("Attaching thread: " + thread);
 		attachedThread = thread;
+		startTimer();
+	}
+
+	private void startTimer() {
+		if (!hidebuffer && maxMemorySize > (15 * 1048576)) {
+			timer = new Timer(attachedThread + "-Timer");
+			timer.schedule(new TimerTask() {
+				@Override
+				public void run() {
+					long rc = 0;
+
+					if (getCurrentInputStream() != null) {
+						rc = getCurrentInputStream().getReadCount();
+						PMS.get().getFrame().setReadValue(rc, "");
+					}
+
+					long space = (writeCount - rc);
+					LOGGER.trace("buffered: " + formatter.format(space) + " bytes / inputs: " + inputStreams.size());
+
+					// There are 1048576 bytes in a megabyte
+					long bufferInMBs = space / 1048576;
+					if (renderer != null) {
+						renderer.setBuffer(bufferInMBs);
+					}
+					PMS.get().getFrame().updateBuffer();
+				}
+			}, 0, 2000);
+		}
 	}
 
 	@Override
@@ -806,7 +826,9 @@ public class BufferedOutputFileImpl extends OutputStream implements BufferedOutp
 
 	@Override
 	public void detachInputStream() {
-		PMS.get().getFrame().setReadValue(0, "");
+		if (!hidebuffer) {
+			PMS.get().getFrame().setReadValue(0, "");
+		}
 
 		if (attachedThread != null) {
 			attachedThread.setReadyToStop(true);
@@ -830,7 +852,7 @@ public class BufferedOutputFileImpl extends OutputStream implements BufferedOutp
 				}
 			}
 		};
-		new Thread(checkEnd, "Buffered IO End Checker").start();
+		new Thread(checkEnd, attachedThread + "-Cleanup").start();
 	}
 
 	@Override
@@ -843,7 +865,9 @@ public class BufferedOutputFileImpl extends OutputStream implements BufferedOutp
 			}
 		}
 
-		timer.cancel();
+		if (timer != null) {
+			timer.cancel();
+		}
 
 		if (buffer != null) {
 			LOGGER.trace("Destroying buffer");
@@ -852,8 +876,11 @@ public class BufferedOutputFileImpl extends OutputStream implements BufferedOutp
 
 		buffered = false;
 
-		if (maxMemorySize != 1048576) {
-			PMS.get().getFrame().setValue(0, Messages.getString("StatusTab.5"));
+		if (renderer != null) {
+			renderer.setBuffer(0);
+		}
+		if (!hidebuffer && maxMemorySize != 1048576) {
+			PMS.get().getFrame().updateBuffer();
 		}
 	}
 }

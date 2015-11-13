@@ -15,7 +15,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Checks for and downloads new versions of PMS.
- * 
+ *
  * @author Tim Cox (mail@tcox.org)
  */
 public class AutoUpdater extends Observable implements UriRetrieverCallback {
@@ -134,7 +134,8 @@ public class AutoUpdater extends Observable implements UriRetrieverCallback {
 			if (!exe.exists()) {
 				exe = new File(configuration.getTempFolder(), TARGET_FILENAME);
 			}
-			Runtime.getRuntime().exec(exe.getAbsolutePath());
+			// Use exec(String[]) to avoid space-quoting issues
+			Runtime.getRuntime().exec(new String[] {exe.getAbsolutePath()});
 		} catch (IOException e) {
 			wrapException("Unable to run update. You may need to manually download it.", e);
 		}
@@ -160,7 +161,7 @@ public class AutoUpdater extends Observable implements UriRetrieverCallback {
 		}
 	}
 
-	private synchronized void setState(State value) {
+	private void setState(State value) {
 		synchronized (stateLock) {
 			state = value;
 
@@ -187,6 +188,17 @@ public class AutoUpdater extends Observable implements UriRetrieverCallback {
 
 	private void downloadUpdate() throws UpdateException {
 		String downloadUrl = serverProperties.getDownloadUrl();
+
+		/**
+		 * Modify the URL to match the Java version.
+		 * We keep "Java7" hardcoded to maintain compatibility with
+		 * older versions of UMS.
+		 */
+		if (System.getProperty("java.version").startsWith("1.8")) {
+			downloadUrl = downloadUrl.replace("Java7", "Java8");
+		} else if (System.getProperty("java.version").startsWith("1.6")) {
+			downloadUrl = downloadUrl.replace("Java7", "Java6");
+		}
 
 		try {
 			byte[] download = uriRetriever.getWithCallback(downloadUrl, this);

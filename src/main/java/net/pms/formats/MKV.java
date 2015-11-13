@@ -50,6 +50,7 @@ public class MKV extends MPG {
 		return new String[] {
 			"3g2",
 			"3gp",
+			"3gp2",
 			"asf",
 			"asx",
 			"dv",
@@ -58,6 +59,7 @@ public class MKV extends MPG {
 			"hdmov",
 			"hdm",
 			"m2v",
+			"mk3d",
 			"mkv",
 			"mov",
 			"ogm",
@@ -67,6 +69,8 @@ public class MKV extends MPG {
 			"rm",
 			"ty",
 			"webm",
+			"265",
+			"h265"
 		};
 	}
 }

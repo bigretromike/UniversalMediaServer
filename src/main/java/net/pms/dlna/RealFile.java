@@ -22,7 +22,6 @@ import com.sun.jna.Platform;
 import java.io.*;
 import java.util.ArrayList;
 import net.pms.PMS;
-import net.pms.configuration.PmsConfiguration;
 import net.pms.formats.Format;
 import net.pms.formats.FormatFactory;
 import net.pms.util.FileUtil;
@@ -33,7 +32,6 @@ import org.slf4j.LoggerFactory;
 
 public class RealFile extends MapFile {
 	private static final Logger LOGGER = LoggerFactory.getLogger(RealFile.class);
-	private static final PmsConfiguration configuration = PMS.getConfiguration();
 
 	private boolean useSuperThumb;
 
@@ -56,12 +54,12 @@ public class RealFile extends MapFile {
 		File file = this.getFile();
 		resolveFormat();
 		if (getType() == Format.VIDEO && file.exists() && configuration.isAutoloadExternalSubtitles() && file.getName().length() > 4) {
-			setSubsFile(FileUtil.isSubtitlesExists(file, null));
+			setHasExternalSubtitles(FileUtil.isSubtitlesExists(file, null));
 		}
 
 		boolean valid = file.exists() && (getFormat() != null || file.isDirectory());
 
-		if (valid && getParent().getDefaultRenderer() != null && getParent().getDefaultRenderer().isMediaParserV2()) {
+		if (valid && getParent().getDefaultRenderer() != null && getParent().getDefaultRenderer().isUseMediaInfo()) {
 			// we need to resolve the DLNA resource now
 			run();
 
@@ -81,8 +79,8 @@ public class RealFile extends MapFile {
 				}
 			}
 
-			// XXX isMediaParserV2ThumbnailGeneration is only true for the "default renderer"
-			if (getParent().getDefaultRenderer().isMediaParserV2ThumbnailGeneration()) {
+			// XXX isMediaInfoThumbnailGeneration is only true for the "default renderer"
+			if (getParent().getDefaultRenderer().isMediaInfoThumbnailGeneration()) {
 				checkThumbnail();
 			}
 		}
@@ -157,7 +155,7 @@ public class RealFile extends MapFile {
 	}
 
 	@Override
-	public void resolve() {
+	public synchronized void resolve() {
 		File file = getFile();
 		if (file.isFile() && (getMedia() == null || !getMedia().isMediaparsed())) {
 			boolean found = false;
@@ -193,7 +191,7 @@ public class RealFile extends MapFile {
 					getFormat().parse(getMedia(), input, getType(), getParent().getDefaultRenderer());
 				} else {
 					// Don't think that will ever happen
-					getMedia().parse(input, getFormat(), getType(), false);
+					getMedia().parse(input, getFormat(), getType(), false, isResume(), getParent().getDefaultRenderer());
 				}
 
 				if (found && configuration.getUseCache()) {
@@ -214,7 +212,7 @@ public class RealFile extends MapFile {
 
 	@Override
 	public InputStream getThumbnailInputStream() throws IOException {
-		if (useSuperThumb) {
+		if (useSuperThumb || getParent() instanceof FileTranscodeVirtualFolder && (getMediaSubtitle() != null || getMediaAudio() != null)) {
 			return super.getThumbnailInputStream();
 		}
 
@@ -286,7 +284,7 @@ public class RealFile extends MapFile {
 	public void checkThumbnail() {
 		InputFile input = new InputFile();
 		input.setFile(getFile());
-		checkThumbnail(input);
+		checkThumbnail(input, getParent().getDefaultRenderer());
 	}
 
 	@Override

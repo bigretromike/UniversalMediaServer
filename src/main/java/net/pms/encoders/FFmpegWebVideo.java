@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import javax.swing.JComponent;
+import net.pms.configuration.DeviceConfiguration;
 import net.pms.configuration.PmsConfiguration;
 import net.pms.configuration.RendererConfiguration;
 import net.pms.dlna.DLNAMediaInfo;
@@ -37,6 +38,7 @@ import net.pms.io.OutputParams;
 import net.pms.io.PipeProcess;
 import net.pms.io.ProcessWrapper;
 import net.pms.io.ProcessWrapperImpl;
+import net.pms.io.OutputTextLogger;
 import net.pms.util.PlayerUtil;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.LineIterator;
@@ -47,9 +49,9 @@ import org.slf4j.LoggerFactory;
 public class FFmpegWebVideo extends FFMpegVideo {
 	private static final Logger LOGGER = LoggerFactory.getLogger(FFmpegWebVideo.class);
 	private static List<String> protocols;
-	public static PatternMap<Object> excludes = new PatternMap<>();
+	public static final PatternMap<Object> excludes = new PatternMap<>();
 
-	public static PatternMap<ArrayList> autoOptions = new PatternMap<ArrayList>() {
+	public static final PatternMap<ArrayList> autoOptions = new PatternMap<ArrayList>() {
 		private static final long serialVersionUID = 5225786297932747007L;
 
 		@Override
@@ -58,7 +60,7 @@ public class FFmpegWebVideo extends FFMpegVideo {
 		}
 	};
 
-	public static PatternMap<String> replacements = new PatternMap<>();
+	public static final PatternMap<String> replacements = new PatternMap<>();
 	private static boolean init = false;
 
 	// FIXME we have an id() accessor for this; no need for the field to be public
@@ -89,7 +91,7 @@ public class FFmpegWebVideo extends FFMpegVideo {
 	public FFmpegWebVideo(PmsConfiguration configuration) {
 		this();
 	}
-	
+
 	public FFmpegWebVideo() {
 		if (!init) {
 			readWebFilters(configuration.getProfileDirectory() + File.separator + "ffmpeg.webfilters");
@@ -111,6 +113,9 @@ public class FFmpegWebVideo extends FFMpegVideo {
 	) throws IOException {
 		params.minBufferSize = params.minFileSize;
 		params.secondread_minsize = 100000;
+		// Use device-specific pms conf
+		PmsConfiguration prev = configuration;
+		configuration = (DeviceConfiguration) params.mediaRenderer;
 		RendererConfiguration renderer = params.mediaRenderer;
 		String filename = dlna.getSystemName();
 		setAudioAndSubs(filename, media, params);
@@ -149,31 +154,10 @@ public class FFmpegWebVideo extends FFMpegVideo {
 			customOptions.addAll(parseOptions(attached));
 		}
 		// - renderer options
-		if (StringUtils.isNotEmpty(renderer.getCustomFFmpegOptions())) {
-			customOptions.addAll(parseOptions(renderer.getCustomFFmpegOptions()));
+		String ffmpegOptions = renderer.getCustomFFmpegOptions();
+		if (StringUtils.isNotEmpty(ffmpegOptions)) {
+			customOptions.addAll(parseOptions(ffmpegOptions));
 		}
-
-		// basename of the named pipe:
-		// ffmpeg -loglevel warning -threads nThreads -i URL -threads nThreads -transcode-video-options /path/to/fifoName
-		String fifoName = String.format(
-			"ffmpegwebvideo_%d_%d",
-			Thread.currentThread().getId(),
-			System.currentTimeMillis()
-		);
-
-		// This process wraps the command that creates the named pipe
-		PipeProcess pipe = new PipeProcess(fifoName);
-		pipe.deleteLater(); // delete the named pipe later; harmless if it isn't created
-		ProcessWrapper mkfifo_process = pipe.getPipeProcess();
-
-		/**
-		 * It can take a long time for Windows to create a named pipe (and
-		 * mkfifo can be slow if /tmp isn't memory-mapped), so run this in
-		 * the current thread.
-		 */
-		mkfifo_process.runInSameThread();
-
-		params.input_pipes[0] = pipe;
 
 		// Build the command line
 		List<String> cmdList = new ArrayList<>();
@@ -206,7 +190,7 @@ public class FFmpegWebVideo extends FFMpegVideo {
 		cmdList.add("-y");
 
 		cmdList.add("-loglevel");
-		
+
 		if (LOGGER.isTraceEnabled()) { // Set -loglevel in accordance with LOGGER setting
 			cmdList.add("info"); // Could be changed to "verbose" or "debug" if "info" level is not enough
 		} else {
@@ -257,18 +241,51 @@ public class FFmpegWebVideo extends FFMpegVideo {
 		}
 
 		// Add the output options (-f, -c:a, -c:v, etc.)
-		cmdList.addAll(getVideoTranscodeOptions(dlna, media, params));
 
-		// Add video bitrate options
-		cmdList.addAll(getVideoBitrateOptions(dlna, media, params));
-
-		// Add audio bitrate options
-		cmdList.addAll(getAudioBitrateOptions(dlna, media, params));
-
-		// Add any remaining custom options
-		if (!customOptions.isEmpty()) {
-			customOptions.transferAll(cmdList);
+		// Now that inputs and filtering are complete, see if we should
+		// give the renderer the final say on the command
+		boolean override = false;
+		if (renderer instanceof RendererConfiguration.OutputOverride) {
+			override = ((RendererConfiguration.OutputOverride) renderer).getOutputOptions(cmdList, dlna, this, params);
 		}
+
+		if (!override) {
+			cmdList.addAll(getVideoTranscodeOptions(dlna, media, params));
+
+			// Add video bitrate options
+			cmdList.addAll(getVideoBitrateOptions(dlna, media, params));
+
+			// Add audio bitrate options
+			cmdList.addAll(getAudioBitrateOptions(dlna, media, params));
+
+			// Add any remaining custom options
+			if (!customOptions.isEmpty()) {
+				customOptions.transferAll(cmdList);
+			}
+		}
+
+		// Set up the process
+
+		// basename of the named pipe:
+		String fifoName = String.format(
+			"ffmpegwebvideo_%d_%d",
+			Thread.currentThread().getId(),
+			System.currentTimeMillis()
+		);
+
+		// This process wraps the command that creates the named pipe
+		PipeProcess pipe = new PipeProcess(fifoName);
+		pipe.deleteLater(); // delete the named pipe later; harmless if it isn't created
+		ProcessWrapper mkfifo_process = pipe.getPipeProcess();
+
+		/**
+		 * It can take a long time for Windows to create a named pipe (and
+		 * mkfifo can be slow if /tmp isn't memory-mapped), so run this in
+		 * the current thread.
+		 */
+		mkfifo_process.runInSameThread();
+
+		params.input_pipes[0] = pipe;
 
 		// Output file
 		cmdList.add(pipe.getInputPipe());
@@ -288,6 +305,7 @@ public class FFmpegWebVideo extends FFMpegVideo {
 
 		// Now launch FFmpeg
 		ProcessWrapperImpl pw = new ProcessWrapperImpl(cmdArray, params);
+		parseMediaInfo(filename, dlna, pw); // Better late than never
 		pw.attachProcess(mkfifo_process); // Clean up the mkfifo process when the transcode ends
 
 		// Give the mkfifo process a little time
@@ -306,6 +324,7 @@ public class FFmpegWebVideo extends FFMpegVideo {
 			LOGGER.error("Thread interrupted while waiting for transcode to start", e);
 		}
 
+		configuration = prev;
 		return pw;
 	}
 
@@ -364,6 +383,36 @@ public class FFmpegWebVideo extends FFMpegVideo {
 		}
 		return false;
 	}
+
+	static final Matcher endOfHeader = Pattern.compile("Press \\[q\\]|A-V:|At least|Invalid").matcher("");
+
+	/**
+	 * Parse media info from ffmpeg headers during playback
+	 */
+	public void parseMediaInfo(String filename, final DLNAResource dlna, final ProcessWrapperImpl pw) {
+		if (dlna.getMedia() == null) {
+			dlna.setMedia(new DLNAMediaInfo());
+		} else if (dlna.getMedia().isFFmpegparsed()) {
+			return;
+		}
+		final ArrayList<String> lines = new ArrayList<>();
+		final String input = filename.length() > 200 ? filename.substring(0, 199) : filename;
+		OutputTextLogger ffParser = new OutputTextLogger(null) {
+			@Override
+			public boolean filter(String line) {
+				if (endOfHeader.reset(line).find()) {
+					dlna.getMedia().parseFFmpegInfo(lines, input);
+					LOGGER.trace("[{}] parsed media from headers: {}", ID, dlna.getMedia());
+					dlna.getParent().updateChild(dlna);
+					return false; // done, stop filtering
+				}
+				lines.add(line);
+				return true; // keep filtering
+			}
+		};
+		ffParser.setFiltered(true);
+		pw.setStderrConsumer(ffParser);
+	}
 }
 
 // A self-combining map of regexes that recompiles if modified
@@ -394,11 +443,11 @@ class PatternMap<T> extends modAwareHashMap<String, T> {
 	}
 
 	void compile() {
-		String joined = "";
+		StringBuilder joined = new StringBuilder();
 		groupmap.clear();
 		for (String regex : this.keySet()) {
 			// add each regex as a capture group
-			joined += "|(" + regex + ")";
+			joined.append("|(").append(regex).append(")");
 			// map all subgroups to the parent
 			for (int i = 0; i < Pattern.compile(regex).matcher("").groupCount() + 1; i++) {
 				groupmap.add(regex);

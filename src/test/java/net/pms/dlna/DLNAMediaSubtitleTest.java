@@ -22,11 +22,11 @@ import ch.qos.logback.classic.LoggerContext;
 import java.io.File;
 import java.io.FileNotFoundException;
 import static net.pms.formats.v2.SubtitleType.*;
+import static net.pms.util.Constants.*;
 import org.apache.commons.io.FileUtils;
-import static org.fest.assertions.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.*;
 import org.junit.Before;
 import org.junit.Test;
-import static org.mozilla.universalchardet.Constants.*;
 import org.slf4j.LoggerFactory;
 
 public class DLNAMediaSubtitleTest {
@@ -144,14 +144,6 @@ public class DLNAMediaSubtitleTest {
 		assertThat(sub3.isExternalFileUtf8()).isFalse();
 		assertThat(sub3.isExternalFileUtf16()).isFalse();
 		assertThat(sub3.isExternalFileUtf()).isFalse();
-
-		File file_ibm866 = FileUtils.toFile(CLASS.getResource("../util/russian-ibm866.srt"));
-		DLNAMediaSubtitle sub4 = new DLNAMediaSubtitle();
-		sub4.setExternalFile(file_ibm866);
-		assertThat(sub4.getExternalFileCharacterSet()).isEqualTo(CHARSET_IBM866);
-		assertThat(sub4.isExternalFileUtf8()).isFalse();
-		assertThat(sub4.isExternalFileUtf16()).isFalse();
-		assertThat(sub4.isExternalFileUtf()).isFalse();
 
 		File file_koi8_r = FileUtils.toFile(CLASS.getResource("../util/russian-koi8-r.srt"));
 		DLNAMediaSubtitle sub5 = new DLNAMediaSubtitle();

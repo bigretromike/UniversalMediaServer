@@ -26,7 +26,6 @@ import java.io.OutputStream;
 import java.io.RandomAccessFile;
 import net.pms.formats.Format;
 import net.pms.util.FileUtil;
-import net.sf.sevenzipjbinding.IInStream;
 import net.sf.sevenzipjbinding.ISequentialOutStream;
 import net.sf.sevenzipjbinding.ISevenZipInArchive;
 import net.sf.sevenzipjbinding.SevenZip;
@@ -92,7 +91,7 @@ public class SevenZipEntry extends DLNAResource implements IPushOutput {
 	@Override
 	public boolean isValid() {
 		resolveFormat();
-		setSubsFile(FileUtil.isSubtitlesExists(file, null));
+		setHasExternalSubtitles(FileUtil.isSubtitlesExists(file, null));
 		return getFormat() != null;
 	}
 
@@ -112,7 +111,7 @@ public class SevenZipEntry extends DLNAResource implements IPushOutput {
 					//byte data[] = new byte[65536];
 					RandomAccessFile rf = new RandomAccessFile(file, "r");
 
-					arc = SevenZip.openInArchive(null, (IInStream) new RandomAccessFileInStream(rf));
+					arc = SevenZip.openInArchive(null, new RandomAccessFileInStream(rf));
 					ISimpleInArchive simpleInArchive = arc.getSimpleInterface();
 					ISimpleInArchiveItem realItem = null;
 
@@ -162,7 +161,7 @@ public class SevenZipEntry extends DLNAResource implements IPushOutput {
 	}
 
 	@Override
-	public void resolve() {
+	public synchronized void resolve() {
 		if (getFormat() == null || !getFormat().isVideo()) {
 			return;
 		}
@@ -180,7 +179,7 @@ public class SevenZipEntry extends DLNAResource implements IPushOutput {
 				InputFile input = new InputFile();
 				input.setPush(this);
 				input.setSize(length());
-				getFormat().parse(getMedia(), input, getType());
+				getFormat().parse(getMedia(), input, getType(), null);
 			}
 		}
 

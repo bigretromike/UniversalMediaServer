@@ -20,13 +20,13 @@ package net.pms.newgui;
 
 import com.jgoodies.looks.Options;
 import com.jgoodies.looks.plastic.PlasticLookAndFeel;
+import com.jgoodies.looks.windows.WindowsLookAndFeel;
 import com.sun.jna.Platform;
 import java.awt.*;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.IOException;
 import java.net.URL;
-import java.util.Locale;
 import java.util.Observable;
 import java.util.Observer;
 import javax.imageio.ImageIO;
@@ -41,7 +41,9 @@ import javax.swing.plaf.metal.MetalLookAndFeel;
 import net.pms.Messages;
 import net.pms.PMS;
 import net.pms.configuration.PmsConfiguration;
+import net.pms.configuration.RendererConfiguration;
 import net.pms.io.WindowsNamedPipe;
+import net.pms.newgui.components.CustomJButton;
 import net.pms.newgui.update.AutoUpdateDialog;
 import net.pms.update.AutoUpdater;
 import net.pms.util.PropertiesUtil;
@@ -55,9 +57,12 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 	private final PmsConfiguration configuration;
 	public static final String START_SERVICE = "start.service";
 	private static final long serialVersionUID = 8723727186288427690L;
-	protected static final Dimension PREFERRED_SIZE = new Dimension(1000, 750);
+	private Dimension storedWindowSize = new Dimension();
+	private Dimension storedScreenSize = new Dimension();
+	protected static final Dimension STANDARD_SIZE = new Dimension(1000, 750);
 	// https://code.google.com/p/ps3mediaserver/issues/detail?id=949
 	protected static final Dimension MINIMUM_SIZE = new Dimension(800, 480);
+	private Dimension screenSize = getToolkit().getScreenSize();
 
 	/**
 	 * List of context sensitive help pages URLs. These URLs should be
@@ -86,6 +91,18 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 	private AbstractButton reload;
 	private JLabel status;
 	private static boolean lookAndFeelInitialized = false;
+	private ViewLevel viewLevel = ViewLevel.UNKNOWN;
+
+	public ViewLevel getViewLevel() {
+		return viewLevel;
+	}
+
+	public void setViewLevel(ViewLevel viewLevel) {
+		if (viewLevel != ViewLevel.UNKNOWN){
+			this.viewLevel = viewLevel;
+			tt.applyViewLevel();
+		}
+	}
 
 	public TracesTab getTt() {
 		return tt;
@@ -118,11 +135,7 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 
 		LookAndFeel selectedLaf = null;
 		if (Platform.isWindows()) {
-			try {
-				selectedLaf = (LookAndFeel) Class.forName("com.jgoodies.looks.windows.WindowsLookAndFeel").newInstance();
-			} catch (ClassNotFoundException | InstantiationException | IllegalAccessException e) {
-				selectedLaf = new PlasticLookAndFeel();
-			}
+			selectedLaf = new WindowsLookAndFeel();
 		} else if (System.getProperty("nativelook") == null && !Platform.isMac()) {
 			selectedLaf = new PlasticLookAndFeel();
 		} else {
@@ -184,6 +197,14 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 		Options.setDefaultIconSize(new Dimension(18, 18));
 		Options.setUseNarrowButtons(true);
 
+		// Set view level, can be omitted if ViewLevel is implemented in configuration
+		// by setting the view level as variable initialization
+		if (configuration.isHideAdvancedOptions()) {
+			viewLevel = ViewLevel.NORMAL;
+		} else {
+			viewLevel = ViewLevel.ADVANCED;
+		}
+
 		// Global options
 		Options.setTabIconsEnabled(true);
 		UIManager.put(Options.POPUP_DROP_SHADOW_ENABLED_KEY, null);
@@ -200,11 +221,11 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 		// http://propedit.sourceforge.jp/propertieseditor.jnlp
 		Font sf = null;
 
-		// Set an unicode font for testing exotics languages (japanese)
-		final String language = configuration.getLanguage();
+		// Set an unicode font for testing exotic languages (Japanese)
+		final String language = configuration.getLanguageTag();
 
-		if (language != null && (language.equals("ja") || language.startsWith("zh"))) {
-			sf = new Font("Serif", Font.PLAIN, 12);
+		if (language != null && (language.equals("ja") || language.startsWith("zh") || language.equals("ko"))) {
+			sf = new Font("SansSerif", Font.PLAIN, 12);
 		}
 
 		if (sf != null) {
@@ -241,6 +262,7 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 			UIManager.put("ToolBar.font", sf);
 			UIManager.put("ToolTip.font", sf);
 			UIManager.put("Tree.font", sf);
+			UIManager.put("Spinner.font", sf);
 		}
 
 		setTitle("Test");
@@ -291,27 +313,45 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 			title = title + " - " + Messages.getString("LooksFrame.26");
 		}
 
-		this.setTitle(title);
-		this.setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
-		Dimension screenSize = getToolkit().getScreenSize();
+		if (PMS.getTraceMode() == 2) {
+			// Forced trace mode
+			title = title + "  [" + Messages.getString("TracesTab.10").toUpperCase() + "]";
+		}
 
+		setTitle(title);
+		setDefaultCloseOperation(JFrame.HIDE_ON_CLOSE);
 		if (screenSize.width < MINIMUM_SIZE.width || screenSize.height < MINIMUM_SIZE.height) {
 			setMinimumSize(screenSize);
 		} else {
 			setMinimumSize(MINIMUM_SIZE);
 		}
 
-		if (screenSize.width < PREFERRED_SIZE.width || screenSize.height < PREFERRED_SIZE.height) {
+		String ss = configuration.getScreenSize();
+		storedScreenSize.height = Integer.valueOf(ss.substring(ss.indexOf("x") + 1));
+		storedScreenSize.width = Integer.valueOf(ss.substring(0, ss.indexOf("x")));
+		String[] windowGeometryValues = configuration.getWindowGeometry().split(",");
+		int posX = Integer.valueOf(windowGeometryValues[0].substring(windowGeometryValues[0].indexOf("=") + 1));
+		int posY = Integer.valueOf(windowGeometryValues[1].substring(windowGeometryValues[1].indexOf("=") + 1));
+		storedWindowSize.width = Integer.valueOf(windowGeometryValues[2].substring(windowGeometryValues[2].indexOf("=") + 1));
+		storedWindowSize.height = Integer.valueOf(windowGeometryValues[3].substring(windowGeometryValues[3].indexOf("=") + 1));
+		boolean screenChanged = false;
+		if (storedScreenSize.width != screenSize.getWidth() || storedScreenSize.height != screenSize.getHeight()) {
+			setSize(STANDARD_SIZE);
+			screenChanged = true;
+		} else if (configuration.getWindowExtendedState() != NORMAL) {
+			setSize(STANDARD_SIZE);
+			setExtendedState(configuration.getWindowExtendedState());
+		} else if (screenSize.width < storedWindowSize.width || screenSize.height < storedWindowSize.height) {
 			setSize(screenSize);
 		} else {
-			setSize(PREFERRED_SIZE);
+			setSize(storedWindowSize);
 		}
 
 		// Customize the colors used in tooltips
-		UIManager.put("ToolTip.background", new ColorUIResource(125, 184, 47));
-		Border border = BorderFactory.createLineBorder(new Color(125, 184, 47));
+		UIManager.put("ToolTip.background", new ColorUIResource(PMS.getConfiguration().getToolTipBackgroundColor()));
+		Border border = BorderFactory.createLineBorder(PMS.getConfiguration().getToolTipBackgroundColor());
 		UIManager.put("ToolTip.border", border);
-		UIManager.put("ToolTip.foreground", new ColorUIResource(255, 255, 255));
+		UIManager.put("ToolTip.foreground", new ColorUIResource(PMS.getConfiguration().getToolTipForegroundColor()));
 
 		// Display tooltips immediately and for a long time
 		ToolTipManager.sharedInstance().setInitialDelay(0);
@@ -319,10 +359,15 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 
 		setResizable(true);
 		Dimension paneSize = getSize();
-		setLocation(
+		if (posX == -1 && posY == -1 || screenChanged) { // first run of UMS or screen/desktop was changed so set the position to the middle of the screen
+			setLocation(
 			((screenSize.width > paneSize.width) ? ((screenSize.width - paneSize.width) / 2) : 0),
 			((screenSize.height > paneSize.height) ? ((screenSize.height - paneSize.height) / 2) : 0)
-		);
+			);
+		} else {
+			setLocation(posX, posY);
+		}
+
 		if (!configuration.isMinimized() && System.getProperty(START_SERVICE) == null) {
 			setVisible(true);
 		}
@@ -341,15 +386,6 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 		toolBar.setRollover(true);
 
 		toolBar.add(new JPanel());
-		AbstractButton save = createToolBarButton(Messages.getString("LooksFrame.9"), "button-save.png");
-		save.addActionListener(new ActionListener() {
-			@Override
-			public void actionPerformed(ActionEvent e) {
-				PMS.get().save();
-			}
-		});
-		toolBar.add(save);
-		toolBar.addSeparator();
 		reload = createToolBarButton(Messages.getString("LooksFrame.12"), "button-restart.png");
 		reload.addActionListener(new ActionListener() {
 			@Override
@@ -359,7 +395,7 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 		});
 		reload.setToolTipText(Messages.getString("LooksFrame.28"));
 		toolBar.add(reload);
-		toolBar.addSeparator();
+		toolBar.addSeparator(new Dimension(20, 1));
 		AbstractButton quit = createToolBarButton(Messages.getString("LooksFrame.5"), "button-quit.png");
 		quit.addActionListener(new ActionListener() {
 			@Override
@@ -374,8 +410,7 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 		toolBar.add(new JPanel());
 
 		// Apply the orientation to the toolbar and all components in it
-		Locale locale = new Locale(configuration.getLanguage());
-		ComponentOrientation orientation = ComponentOrientation.getOrientation(locale);
+		ComponentOrientation orientation = ComponentOrientation.getOrientation(PMS.getLocale());
 		toolBar.applyComponentOrientation(orientation);
 
 		panel.add(toolBar, BorderLayout.NORTH);
@@ -398,11 +433,11 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 		tabbedPane.setUI(new CustomTabbedPaneUI());
 
 		st = new StatusTab(configuration);
-		tt = new TracesTab(configuration);
-		gt = new GeneralTab(configuration);
-		pt = new PluginTab(configuration);
-		nt = new NavigationShareTab(configuration);		
-		tr = new TranscodingTab(configuration);
+		tt = new TracesTab(configuration, this);
+		gt = new GeneralTab(configuration, this);
+		pt = new PluginTab(configuration, this);
+		nt = new NavigationShareTab(configuration, this);
+		tr = new TranscodingTab(configuration, this);
 		ht = new HelpTab();
 
 		tabbedPane.addTab(Messages.getString("LooksFrame.18"), st.build());
@@ -435,8 +470,7 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 		 * Note: Do not use applyComponentOrientation() here because it
 		 * messes with the layout of several tabs.
 		 */
-		Locale locale = new Locale(configuration.getLanguage());
-		ComponentOrientation orientation = ComponentOrientation.getOrientation(locale);
+		ComponentOrientation orientation = ComponentOrientation.getOrientation(PMS.getLocale());
 		tabbedPane.setComponentOrientation(orientation);
 
 		return tabbedPane;
@@ -459,11 +493,23 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 
 	public void quit() {
 		WindowsNamedPipe.setLoop(false);
-
+		String windowGeometry = getBounds().toString();
+		try {
+			if (getExtendedState() != NORMAL) {
+				configuration.setWindowExtendedState(getExtendedState());
+			} else {
+				configuration.setWindowExtendedState(NORMAL);
+				configuration.setWindowGeometry(windowGeometry.substring(windowGeometry.indexOf("[") + 1, windowGeometry.indexOf("]")));
+			}
+			configuration.setScreenSize((int) screenSize.getWidth() + "x" + (int) screenSize.getHeight());
+		} catch (Exception e) {
+			LOGGER.warn("Failed to save window geometry and size: {}", e.getMessage());
+			LOGGER.debug("", e);
+		}
 		try {
 			Thread.sleep(100);
 		} catch (InterruptedException e) {
-			LOGGER.error(null, e);
+			LOGGER.error("Interrupted during shutdown: {}", e);
 		}
 
 		System.exit(0);
@@ -491,19 +537,18 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 	}
 
 	@Override
-	public void setValue(int v, String msg) {
-		st.getJpb().setValue(v);
-		st.getJpb().setString(msg);
+	public void updateBuffer() {
+		st.updateCurrentBitrate();
 	}
 
 	/**
 	 * This method is being called when a configuration change requiring
 	 * a restart of the HTTP server has been done by the user. It should notify the user
 	 * to restart the server.<br>
-	 * Currently the icon as well as the tool tip text of the restart button is being 
+	 * Currently the icon as well as the tool tip text of the restart button is being
 	 * changed.<br>
 	 * The actions requiring a server restart are defined by {@link PmsConfiguration#NEED_RELOAD_FLAGS}
-	 * 
+	 *
 	 * @param bool true if the server has to be restarted, false otherwise
 	 */
 	@Override
@@ -558,12 +603,18 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 	}
 
 	@Override
-	public void addRendererIcon(int code, String msg, String icon) {
-		st.addRendererIcon(code, msg, icon);
+	public void addRenderer(RendererConfiguration renderer) {
+		st.addRenderer(renderer);
+	}
+
+	@Override
+	public void updateRenderer(RendererConfiguration renderer) {
+		st.updateRenderer(renderer);
 	}
 
 	@Override
 	public void serverReady() {
+		st.updateMemoryUsage();
 		gt.addRenderers();
 		pt.addPlugins();
 	}
@@ -571,5 +622,9 @@ public class LooksFrame extends JFrame implements IFrame, Observer {
 	@Override
 	public void setScanLibraryEnabled(boolean flag) {
 		getNt().setScanLibraryEnabled(flag);
+	}
+
+	public String getLog() {
+		return getTt().getList().getText();
 	}
 }

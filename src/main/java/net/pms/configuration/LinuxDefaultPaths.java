@@ -1,5 +1,6 @@
 package net.pms.configuration;
 
+import com.sun.jna.Platform;
 import java.io.File;
 import net.pms.util.PropertiesUtil;
 import static org.apache.commons.lang3.StringUtils.isNotBlank;
@@ -9,7 +10,21 @@ class LinuxDefaultPaths implements ProgramPaths {
 
 	@Override
 	public String getFfmpegPath() {
-		return getBinaryPath("ffmpeg");
+		String ffmpegPath;
+		if (Platform.is64Bit()) {
+			ffmpegPath = getBinaryPath("ffmpeg64");
+
+			/**
+			 * Use the default FFmpeg binary if we can't find ffmpeg64
+			 */
+			if (ffmpegPath.equals("ffmpeg64")) {
+				ffmpegPath = getBinaryPath("ffmpeg");
+			}
+		} else {
+			ffmpegPath = getBinaryPath("ffmpeg");
+		}
+
+		return ffmpegPath;
 	}
 
 	@Override

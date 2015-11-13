@@ -25,8 +25,6 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import net.pms.PMS;
 import net.pms.encoders.AviDemuxerInputStream;
 import net.pms.util.ProcessUtil;
@@ -39,7 +37,6 @@ public class ProcessWrapperImpl extends Thread implements ProcessWrapper {
 	/** FONTCONFIG_PATH environment variable name */
 	private static final String FONTCONFIG_PATH = "FONTCONFIG_PATH";
 
-	private String cmdLine;
 	private Process process;
 	private OutputConsumer stdoutConsumer;
 	private OutputConsumer stderrConsumer;
@@ -95,21 +92,6 @@ public class ProcessWrapperImpl extends Thread implements ProcessWrapper {
 		}
 
 		this.cmdArray = cmdArray;
-		StringBuilder sb = new StringBuilder("");
-
-		for (int i = 0; i < cmdArray.length; i++) {
-			if (i > 0) {
-				sb.append(" ");
-			}
-
-			if (cmdArray[i] != null && cmdArray[i].indexOf(' ') >= 0) {
-				sb.append("\"").append(cmdArray[i]).append("\"");
-			} else {
-				sb.append(cmdArray[i]);
-			}
-		}
-
-		cmdLine = sb.toString();
 		this.params = params;
 		this.keepStdout = keepStdout;
 		this.keepStderr = keepStderr;
@@ -128,7 +110,7 @@ public class ProcessWrapperImpl extends Thread implements ProcessWrapper {
 	public void run() {
 		ProcessBuilder pb = new ProcessBuilder(cmdArray);
 		try {
-			LOGGER.debug("Starting " + cmdLine);
+			LOGGER.debug("Starting " + ProcessUtil.dbgWashCmds(cmdArray));
 
 			if (params.workDir != null && params.workDir.isDirectory()) {
 				pb.directory(params.workDir);
@@ -181,9 +163,14 @@ public class ProcessWrapperImpl extends Thread implements ProcessWrapper {
 			process = pb.start();
 			PMS.get().currentProcesses.add(process);
 
-			stderrConsumer = keepStderr
-				? new OutputTextConsumer(process.getErrorStream(), true)
-				: new OutputTextLogger(process.getErrorStream(), this);
+			if (stderrConsumer == null) {
+				stderrConsumer = keepStderr
+					? new OutputTextConsumer(process.getErrorStream(), true)
+					: new OutputTextLogger(process.getErrorStream());
+			} else {
+				stderrConsumer.setInputStream(process.getErrorStream());
+			}
+			stderrConsumer.setName(getName() + "-2");
 			stderrConsumer.start();
 			stdoutConsumer = null;
 
@@ -201,11 +188,11 @@ public class ProcessWrapperImpl extends Thread implements ProcessWrapper {
 					bo = stdoutConsumer.getBuffer();
 				}
 				bo.attachThread(this);
-				new OutputTextLogger(process.getInputStream(), this).start();
+				new OutputTextLogger(process.getInputStream()).start();
 			} else if (params.log) {
 				stdoutConsumer = keepStdout
 					? new OutputTextConsumer(process.getInputStream(), true)
-					: new OutputTextLogger(process.getInputStream(), this);
+					: new OutputTextLogger(process.getInputStream());
 			} else {
 				stdoutConsumer = new OutputBufferConsumer(process.getInputStream(), params);
 				bo = stdoutConsumer.getBuffer();
@@ -213,6 +200,7 @@ public class ProcessWrapperImpl extends Thread implements ProcessWrapper {
 			}
 
 			if (stdoutConsumer != null) {
+				stdoutConsumer.setName(getName() + "-1");
 				stdoutConsumer.start();
 			}
 
@@ -242,7 +230,7 @@ public class ProcessWrapperImpl extends Thread implements ProcessWrapper {
 					stdoutConsumer.join(1000);
 				}
 			} catch (InterruptedException e) { }
-		} catch (Exception e) {
+		} catch (IOException e) {
 			LOGGER.error("Error initializing process: ", e);
 			stopProcess();
 		} finally {
@@ -371,18 +359,9 @@ public class ProcessWrapperImpl extends Thread implements ProcessWrapper {
 		this.nullable = nullable;
 	}
 
-	private String duration;
+	// TODO: implement setStdoutConsumer() ?
 
-	public void pubackDuration(String s) {
-		// match 'Duration: 00:17:17.00' but not 'Duration: N/A'
-		Pattern re = Pattern.compile("Duration:\\s+([\\d:.]+),");
-		Matcher m = re.matcher(s);
-		if (m.find()) {
-			duration = m.group(1);
-		}
-	}
-
-	public String getDuration() {
-		return duration;
+	public void setStderrConsumer(OutputConsumer consumer) {
+		this.stderrConsumer = consumer;
 	}
 }

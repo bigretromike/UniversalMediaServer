@@ -7,6 +7,7 @@ package net.pms.configuration;
 import com.google.gson.*;
 import com.google.gson.reflect.TypeToken;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
@@ -76,14 +77,15 @@ public class MapFileConfiguration {
 			File file = new File(configuration.getProfileDirectory(), conf);
 			conf = null;
 
-			if (FileUtil.isFileReadable(file)) {
-				try {
-					conf = FileUtils.readFileToString(file);
-				} catch (IOException ex) {
-					return null;
-				}
-			} else {
-				LOGGER.warn("Can't read file: {}", file.getAbsolutePath());
+			try {
+				conf = FileUtils.readFileToString(file);
+			} catch (FileNotFoundException ex) {
+				LOGGER.warn("Can't read file: {}", ex.getMessage());
+				return null;
+			} catch (IOException e) {
+				LOGGER.warn("Unexpected exeption while reading \"{}\": {}", file.getAbsolutePath(), e.getMessage());
+				LOGGER.debug("",e);
+				return null;
 			}
 
 			GsonBuilder gsonBuilder = new GsonBuilder();
@@ -95,27 +97,27 @@ public class MapFileConfiguration {
 		} else if (configuration.getVirtualFolders(tags).trim().length() > 0) {
 			// Get the virtual folder info from the config string
 			conf = configuration.getVirtualFolders(tags).trim().replaceAll("&comma;", ",");
-			String jsonStringFromConf = "";
 
 			// Convert our syntax into JSON syntax
 			String arrayLevel1[] = conf.split("\\|");
 			int i = 0;
 			boolean firstLoop = true;
+			StringBuilder jsonStringFromConf = new StringBuilder();
 			for (String value : arrayLevel1) {
 				if (!firstLoop) {
-					jsonStringFromConf += ",";
+					jsonStringFromConf.append(",");
 				}
 
 				if (i == 0) {
-					jsonStringFromConf += "[{\"name\":\"" + value + "\",files:[";
+					jsonStringFromConf.append("[{\"name\":\"").append(value).append("\",files:[");
 					i++;
 				} else {
 					String arrayLevel2[] = value.split(",");
 					for (String value2 : arrayLevel2) {
-						jsonStringFromConf += "\"" + value2 + "\",";
+						jsonStringFromConf.append("\"").append(value2).append("\",");
 					}
 
-					jsonStringFromConf += "]}]";
+					jsonStringFromConf.append("]}]");
 					firstLoop = false;
 					i = 0;
 				}
@@ -125,11 +127,10 @@ public class MapFileConfiguration {
 			gsonBuilder.registerTypeAdapter(File.class, new FileSerializer());
 			Gson gson = gsonBuilder.create();
 			Type listType = (new TypeToken<ArrayList<MapFileConfiguration>>() { }).getType();
-			List<MapFileConfiguration> out = gson.fromJson(jsonStringFromConf.replaceAll("\\\\","\\\\\\\\"), listType);
+			List<MapFileConfiguration> out = gson.fromJson(jsonStringFromConf.toString().replaceAll("\\\\","\\\\\\\\"), listType);
 
 			return out;
 		}
-
 		return null;
 	}
 }
@@ -146,11 +147,16 @@ class FileSerializer implements JsonSerializer<File>, JsonDeserializer<File> {
 	public File deserialize(JsonElement json, Type typeOfT, JsonDeserializationContext context) throws JsonParseException {
 		File file = new File(json.getAsJsonPrimitive().getAsString());
 
-		if (!FileUtil.isDirectoryReadable(file)) {
-			LOGGER.warn("Can't read directory: {}", file.getAbsolutePath());
+		try {
+			if (FileUtil.getFilePermissions(file).isBrowsable()) {
+				return file;
+			} else {
+				LOGGER.warn("Can't read folder: {}", file.getAbsolutePath());
+				return null;
+			}
+		} catch (FileNotFoundException e) {
+			LOGGER.warn("Folder not found: {}", e.getMessage());
 			return null;
-		} else {
-			return file;
 		}
 	}
 }

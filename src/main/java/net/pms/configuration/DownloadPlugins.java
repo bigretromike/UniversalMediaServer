@@ -1,3 +1,23 @@
+/*
+ * Universal Media Server, for streaming any medias to DLNA
+ * compatible renderers based on the http://www.ps3mediaserver.org.
+ * Copyright (C) 2012 UMS developers.
+ *
+ * This program is a free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; version 2
+ * of the License only.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ */
+
 package net.pms.configuration;
 
 import com.sun.jna.Platform;
@@ -13,6 +33,7 @@ import java.net.URL;
 import java.net.URLConnection;
 import java.util.ArrayList;
 import java.util.Map;
+import java.util.Scanner;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import javax.swing.JLabel;
@@ -32,10 +53,6 @@ public class DownloadPlugins {
 	private static final Logger LOGGER = LoggerFactory.getLogger(DownloadPlugins.class);
 	private static final PmsConfiguration configuration = PMS.getConfiguration();
 
-	private static final int TYPE_JAR = 0;
-	private static final int TYPE_LIST = 1;
-	private static final int TYPE_PLATFORM_LIST = 2;
-
 	private String id;
 	private String name;
 	private String rating;
@@ -43,7 +60,6 @@ public class DownloadPlugins {
 	private String url;
 	private String author;
 	private String version;
-	private int type;
 	private ArrayList<URL> jars;
 	private JLabel updateLabel;
 	private String[] props;
@@ -71,7 +87,7 @@ public class DownloadPlugins {
 				in = new BufferedReader(new InputStreamReader(new FileInputStream(test)));
 				parse_list(res, in, true);
 			}
-		} catch (Exception e) {
+		} catch (IOException e) {
 		}
 		return res;
 	}
@@ -99,6 +115,7 @@ public class DownloadPlugins {
 					LOGGER.trace("An invalid plugin was ignored (1)");
 				}
 				plugin = new DownloadPlugins(test);
+				continue;
 			}
 			String[] keyval = str.split("=", 2);
 			if (keyval.length < 2) {
@@ -127,15 +144,7 @@ public class DownloadPlugins {
 				plugin.version = keyval[1];
 			}
 			if (keyval[0].equalsIgnoreCase("type")) {
-				if (keyval[1].equalsIgnoreCase("jar")) {
-					plugin.type = DownloadPlugins.TYPE_JAR;
-				}
-				if (keyval[1].equalsIgnoreCase("list")) {
-					plugin.type = DownloadPlugins.TYPE_LIST;
-				}
-				if (keyval[1].equalsIgnoreCase("platform_list")) {
-					plugin.type = DownloadPlugins.TYPE_PLATFORM_LIST;
-				}
+				// Deprecated
 			}
 			if (keyval[0].equalsIgnoreCase("require")) {
 				plugin.old = false;
@@ -145,7 +154,7 @@ public class DownloadPlugins {
 				for (int i = 0; i < max; i++) {
 					int my,min;
 					// If the versions are of different length
-					// say that the part of "worng" length is 0
+					// say that the part of "wrong" length is 0
 					my = getInt(((i > myVer.length) ? "0" : myVer[i]));
 					min = getInt(((i > minVer.length) ? "0" : minVer[i]));
 					if (min == my) {
@@ -181,7 +190,6 @@ public class DownloadPlugins {
 	}
 
 	public DownloadPlugins(boolean test) {
-		type = DownloadPlugins.TYPE_JAR;
 		rating = "--";
 		jars = null;
 		old = false;
@@ -343,6 +351,8 @@ public class DownloadPlugins {
 			}
 
 			out.flush();
+		} catch (Exception e) {
+			LOGGER.warn("Plugin download error: " + e);
 		}
 
 		if (fName.endsWith(".zip")) {
@@ -377,17 +387,14 @@ public class DownloadPlugins {
 		Map<String, String> env = pb.environment();
 		env.put("PROFILE_PATH", configuration.getProfilePath());
 		env.put("UMS_VERSION", PMS.getVersion());
-		Process pid = pb.start();
-		InputStream is = pid.getInputStream();
-		InputStreamReader isr = new InputStreamReader(is);
-		BufferedReader br = new BufferedReader(isr);
-		String line;
-		StringBuilder sb = new StringBuilder();
-		while ((line = br.readLine()) != null) {
-			sb.append(line);
-		}
 
-		// Reload the config in case we have new settings
+		LOGGER.debug("running '" + args + "'");
+		Process pid = pb.start();
+		// Consume and log any output
+		Scanner output = new Scanner(pid.getInputStream());
+		while (output.hasNextLine()) {
+			LOGGER.debug("[" + args + "] " + output.nextLine());
+		}
 		configuration.reload();
 		pid.waitFor();
 
@@ -461,76 +468,67 @@ public class DownloadPlugins {
 		if ("".equals(url)) {
 			url = PLUGIN_LIST_URL + "?id=" + id;
 		}
+		String platform = Platform.isWindows() ? "windows" : Platform.isLinux() ? "linux" : Platform.isMac() ? "osx" : "";
 		URL u = new URL(url);
 		URLConnection connection = u.openConnection();
-		BufferedReader in = new BufferedReader(new InputStreamReader(connection.getInputStream()));
-		String str;
-		boolean res = true;
+		boolean res, skip = false;
+		try (BufferedReader in = new BufferedReader(new InputStreamReader(connection.getInputStream()))) {
+			String str;
+			res = true;
 
-		while ((str = in.readLine()) != null) {
-			str = str.trim();
-
-			if (StringUtils.isEmpty(str)) {
-				continue;
-			}
-
-			String[] tmp = str.split(",", 3);
-			String dir = configuration.getPluginDirectory();
-			String filename = "";
-
-			if (command(tmp[0], str)) {
-				// a command take the next line
-				continue;
-			}
-
-			if (tmp.length > 1) {
-				String rootDir = new File("").getAbsolutePath();
-				if (tmp[1].equalsIgnoreCase("root")) {
-					dir = rootDir;
-				} else {
-					dir = rootDir + File.separator + tmp[1];
+			while ((str = in.readLine()) != null) {
+				str = str.trim();
+				if (StringUtils.isEmpty(str)) {
+					continue;
 				}
-				if (tmp.length > 2) {
-					filename = tmp[2];
+				if (str.toLowerCase().matches("windows|linux|osx")) {
+					skip = !str.toLowerCase().equals(platform);
+					continue;
 				}
-			}
+				if (skip) {
+					// This line is specific to another platform, ignore it
+					continue;
+				}
 
-			res &= downloadFile(tmp[0], dir, filename);
+				String[] tmp = str.split(",", 3);
+				String dir = configuration.getPluginDirectory();
+				String filename = "";
+
+				if (command(tmp[0], str)) {
+					// a command take the next line
+					continue;
+				}
+
+				if (tmp.length > 1) {
+					String rootDir = new File("").getAbsolutePath();
+					if (tmp[1].equalsIgnoreCase("root")) {
+						dir = rootDir;
+					} else {
+						dir = rootDir + File.separator + tmp[1];
+					}
+					if (tmp.length > 2) {
+						filename = tmp[2];
+					}
+				}
+
+				res &= downloadFile(tmp[0], dir, filename);
+			}
 		}
 
 		return res;
 	}
 
 	private boolean download() throws Exception {
-		if (type == DownloadPlugins.TYPE_LIST) {
-			if (isTest()) {
-				// we can't use the id based stuff
-				// when testing
-				return downloadList(url);
-			}
-			return downloadList("");
-		}
-		if (type == DownloadPlugins.TYPE_PLATFORM_LIST) {
-			String ext = "";
-			if (Platform.isWindows()) {
-				ext = ".win";
-			} else if (Platform.isLinux()) {
-				ext = ".lin";
-			} else if (Platform.isMac()) {
-				ext = ".osx";
-			}
-			return downloadList(url + ext);
-		}
-
 		if (isTest()) {
-			return downloadFile(url, configuration.getPluginDirectory(), "");
+			// we can't use the id based stuff
+			// when testing
+			return downloadList(url);
 		}
-
-		return false;
+		return downloadList("");
 	}
 
 	public boolean install(JLabel update) throws Exception {
-		LOGGER.debug("Installing plugin " + name + " type " + type);
+		LOGGER.debug("Installing plugin " + name);
 		updateLabel = update;
 
 		// Init the jar file list

@@ -22,11 +22,14 @@ package net.pms.dlna;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import net.pms.PMS;
 import net.pms.formats.v2.SubtitleType;
-import static net.pms.formats.v2.SubtitleType.*;
+import static net.pms.formats.v2.SubtitleType.UNKNOWN;
 import net.pms.util.FileUtil;
+import static org.apache.commons.lang3.StringUtils.isNotBlank;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.ibm.icu.text.CharsetMatch;
 
 /**
  * This class keeps track of the subtitle information for media.
@@ -35,16 +38,14 @@ public class DLNAMediaSubtitle extends DLNAMediaLang implements Cloneable {
 	private static final Logger LOGGER = LoggerFactory.getLogger(DLNAMediaSubtitle.class);
 	private SubtitleType type = UNKNOWN;
 
-	/*
-	 * This tells us whether the track is forced or not
-	 */
-	private String flavor;
+	private String subtitlesTrackTitleFromMetadata;
 
 	private File externalFile;
 	private String externalFileCharacterSet;
 
 	private String liveSubURL;
 	private String liveSubFile;
+	private boolean isStreamable = false;
 
 	/**
 	 * Returns whether or not the subtitles are embedded.
@@ -73,18 +74,21 @@ public class DLNAMediaSubtitle extends DLNAMediaLang implements Cloneable {
 		result.append(getId());
 		result.append(", type: ");
 		result.append(type);
-		result.append(", flavor: ");
-		result.append(flavor);
+
+		if (isNotBlank(subtitlesTrackTitleFromMetadata)) {
+			result.append(", subtitles track title from metadata: ");
+			result.append(subtitlesTrackTitleFromMetadata);
+		}
+
 		result.append(", lang: ");
 		result.append(getLang());
 
 		if (externalFile != null) {
 			result.append(", externalFile: ");
 			result.append(externalFile.toString());
+			result.append(", external file character set: ");
+			result.append(externalFileCharacterSet);
 		}
-
-		result.append(", externalFileCharacterSet: ");
-		result.append(externalFileCharacterSet);
 
 		return result.toString();
 	}
@@ -119,17 +123,27 @@ public class DLNAMediaSubtitle extends DLNAMediaLang implements Cloneable {
 	}
 
 	/**
-	 * @return the flavor
+	 * @deprecated use getSubtitlesTrackTitleFromMetadata()
 	 */
+	@Deprecated
 	public String getFlavor() {
-		return flavor;
+		return getSubtitlesTrackTitleFromMetadata();
 	}
 
 	/**
-	 * @param flavor the flavor to set
+	 * @deprecated use setSubtitlesTrackTitleFromMetadata()
 	 */
-	public void setFlavor(String flavor) {
-		this.flavor = flavor;
+	@Deprecated
+	public void setFlavor(String value) {
+		setSubtitlesTrackTitleFromMetadata(value);
+	}
+
+	public String getSubtitlesTrackTitleFromMetadata() {
+		return subtitlesTrackTitleFromMetadata;
+	}
+
+	public void setSubtitlesTrackTitleFromMetadata(String value) {
+		this.subtitlesTrackTitleFromMetadata = value;
 	}
 
 	/**
@@ -153,8 +167,8 @@ public class DLNAMediaSubtitle extends DLNAMediaLang implements Cloneable {
 	public void setExternalFile(File externalFile) throws FileNotFoundException {
 		if (externalFile == null) {
 			throw new FileNotFoundException("Can't read file: no file supplied");
-		} else if (!FileUtil.isFileReadable(externalFile)) {
-			throw new FileNotFoundException("Can't read file: " + externalFile.getAbsolutePath());
+		} else if (!FileUtil.getFilePermissions(externalFile).isReadable()) {
+			throw new FileNotFoundException("Insufficient permission to read " + externalFile.getAbsolutePath());
 		}
 
 		this.externalFile = externalFile;
@@ -166,12 +180,22 @@ public class DLNAMediaSubtitle extends DLNAMediaLang implements Cloneable {
 			externalFileCharacterSet = null;
 		} else {
 			try {
-				externalFileCharacterSet = FileUtil.getFileCharset(externalFile);
+				CharsetMatch match = FileUtil.getFileCharsetMatch(externalFile);
+				if (match != null) {
+					externalFileCharacterSet = match.getName().toUpperCase(PMS.getLocale());
+					lang = match.getLanguage();
+				} else {
+					externalFileCharacterSet = null;
+				}
 			} catch (IOException ex) {
 				externalFileCharacterSet = null;
 				LOGGER.warn("Exception during external file charset detection.", ex);
 			}
 		}
+	}
+
+	public void setExternalFileCharacterSet(String charSet) {
+		externalFileCharacterSet = charSet;
 	}
 
 	public String getExternalFileCharacterSet() {
@@ -221,5 +245,13 @@ public class DLNAMediaSubtitle extends DLNAMediaLang implements Cloneable {
 
 	public String getLiveSubFile() {
 		return liveSubFile;
+	}
+
+	public boolean isStreamable() {
+		return isExternal() && isStreamable;
+	}
+
+	public void setSubsStreamable(boolean isStreamable) {
+		this.isStreamable = isStreamable;
 	}
 }

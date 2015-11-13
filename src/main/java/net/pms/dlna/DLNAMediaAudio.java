@@ -20,12 +20,13 @@ package net.pms.dlna;
 
 import net.pms.configuration.FormatConfiguration;
 import net.pms.formats.v2.AudioProperties;
+import static org.apache.commons.lang3.StringUtils.isNotBlank;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * This class keeps track of the audio properties of media.
- * 
+ *
  * TODO: Change all instance variables to private. For backwards compatibility
  * with external plugin code the variables have all been marked as deprecated
  * instead of changed to private, but this will surely change in the future.
@@ -108,7 +109,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 	 * @deprecated Use standard getter and setter to access this variable.
 	 */
 	@Deprecated
-	public String flavor;
+	public String audioTrackTitleFromMetadata;
 
 	/**
 	 * @deprecated Use standard getter and setter to access this variable.
@@ -125,7 +126,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Returns the sample rate for this audio media.
-	 * 
+	 *
 	 * @return The sample rate.
 	 */
 	public int getSampleRate() {
@@ -186,7 +187,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 	 * @return True if the audio codec is Ogg Vorbis.
 	 */
 	public boolean isVorbis() {
-		return getCodecA() != null && getCodecA().equalsIgnoreCase("vorbis");
+		return getCodecA() != null && getCodecA().equalsIgnoreCase(FormatConfiguration.VORBIS);
 	}
 
 	/**
@@ -226,7 +227,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Returns a standardized name for the audio codec that is used.
-	 * 
+	 *
 	 * @return The standardized name.
 	 */
 	public String getAudioCodec() {
@@ -238,15 +239,15 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 			return "TrueHD";
 		} else if (isPCM()) {
 			return "LPCM";
-		} else if (getCodecA() != null && getCodecA().equals("vorbis")) {
+		} else if (isVorbis()) {
 			return "OGG";
-		} else if (getCodecA() != null && getCodecA().equals(FormatConfiguration.AAC)) {
+		} else if (isAAC()) {
 			return "AAC";
-		} else if (getCodecA() != null && getCodecA().equals("mp3")) {
+		} else if (isMP3()) {
 			return "MP3";
-		} else if (getCodecA() != null && getCodecA().startsWith("wm")) {
+		} else if (isWMA()) {
 			return "WMA";
-		} else if (getCodecA() != null && getCodecA().equals("mp2")) {
+		} else if (isMpegAudio()) {
 			return "Mpeg Audio";
 		}
 		return getCodecA() != null ? getCodecA() : "-";
@@ -254,7 +255,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Returns a string containing all identifying audio properties.
-	 * 
+	 *
 	 * @return The properties string.
 	 */
 	@Override
@@ -264,14 +265,18 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 		result.append(getId());
 		result.append(", lang: ");
 		result.append(getLang());
-		result.append(", flavor: ");
-		result.append(getFlavor());
+
+		if (isNotBlank(getAudioTrackTitleFromMetadata())) {
+			result.append(", audio track title from metadata: ");
+			result.append(getAudioTrackTitleFromMetadata());
+		}
+
 		result.append(", audio codec: ");
 		result.append(getAudioCodec());
 		result.append(", sample frequency:");
 		result.append(getSampleFrequency());
-		
-		if (getAudioProperties() != null) {
+
+		if (getAudioProperties() != null && getAudioProperties().getNumberOfChannels() != 0) {
 			result.append(", number of channels: ");
 			result.append(getAudioProperties().getNumberOfChannels());
 		}
@@ -279,7 +284,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 		result.append(", bits per sample: ");
 		result.append(getBitsperSample());
 
-		if (getArtist() != null) {
+		if (isNotBlank(getArtist())) {
 			result.append(", artist: ");
 			result.append(getArtist());
 			result.append(", album: ");
@@ -302,7 +307,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Returns the number of bits per sample for the audio.
-	 * 
+	 *
 	 * @return The number of bits per sample.
 	 * @since 1.50
 	 */
@@ -312,7 +317,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Sets the number of bits per sample for the audio.
-	 * 
+	 *
 	 * @param bitsperSample The number of bits per sample to set.
 	 * @since 1.50
 	 */
@@ -340,7 +345,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Returns the sample frequency for the audio.
-	 * 
+	 *
 	 * @return The sample frequency.
 	 * @since 1.50
 	 */
@@ -350,7 +355,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Sets the sample frequency for the audio.
-	 * 
+	 *
 	 * @param sampleFrequency The sample frequency to set.
 	 * @since 1.50
 	 */
@@ -360,7 +365,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Returns the number of channels for the audio.
-	 * 
+	 *
 	 * @return The number of channels
 	 * @since 1.50
 	 * @deprecated Use getAudioProperties().getNumberOfChannels() instead
@@ -372,7 +377,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Sets the number of channels for the audio.
-	 * 
+	 *
 	 * @param numberOfChannels The number of channels to set.
 	 * @since 1.50
 	 * @deprecated Use getAudioProperties().setNumberOfChannels(int numberOfChannels) instead
@@ -385,7 +390,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Returns the name of the audio codec that is being used.
-	 * 
+	 *
 	 * @return The name of the audio codec.
 	 * @since 1.50
 	 */
@@ -395,7 +400,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Sets the name of the audio codec that is being used.
-	 * 
+	 *
 	 * @param codecA The name of the audio codec to set.
 	 * @since 1.50
 	 */
@@ -405,7 +410,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Returns the name of the album to which an audio track belongs.
-	 * 
+	 *
 	 * @return The album name.
 	 * @since 1.50
 	 */
@@ -415,7 +420,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Sets the name of the album to which an audio track belongs.
-	 * 
+	 *
 	 * @param album The name of the album to set.
 	 * @since 1.50
 	 */
@@ -425,7 +430,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Returns the name of the artist performing the audio track.
-	 * 
+	 *
 	 * @return The artist name.
 	 * @since 1.50
 	 */
@@ -435,7 +440,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Sets the name of the artist performing the audio track.
-	 * 
+	 *
 	 * @param artist The artist name to set.
 	 * @since 1.50
 	 */
@@ -445,7 +450,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Returns the name of the song for the audio track.
-	 * 
+	 *
 	 * @return The song name.
 	 * @since 1.50
 	 */
@@ -455,7 +460,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Sets the name of the song for the audio track.
-	 * 
+	 *
 	 * @param songname The song name to set.
 	 * @since 1.50
 	 */
@@ -465,7 +470,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Returns the name of the genre for the audio track.
-	 * 
+	 *
 	 * @return The genre name.
 	 * @since 1.50
 	 */
@@ -475,7 +480,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Sets the name of the genre for the audio track.
-	 * 
+	 *
 	 * @param genre The name of the genre to set.
 	 * @since 1.50
 	 */
@@ -485,7 +490,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Returns the year of inception for the audio track.
-	 * 
+	 *
 	 * @return The year.
 	 * @since 1.50
 	 */
@@ -495,7 +500,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Sets the year of inception for the audio track.
-	 * 
+	 *
 	 * @param year The year to set.
 	 * @since 1.50
 	 */
@@ -505,7 +510,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Returns the track number within an album for the audio.
-	 * 
+	 *
 	 * @return The track number.
 	 * @since 1.50
 	 */
@@ -515,7 +520,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Sets the track number within an album for the audio.
-	 * 
+	 *
 	 * @param track The track number to set.
 	 * @since 1.50
 	 */
@@ -525,7 +530,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Returns the delay for the audio.
-	 * 
+	 *
 	 * @return The delay.
 	 * @since 1.50
 	 * @deprecated Use getAudioProperties().getAudioDelay() instead
@@ -537,10 +542,10 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Sets the delay for the audio.
-	 * 
+	 *
 	 * @param audioDelay The delay to set.
 	 * @since 1.50
-	 * @deprecated  Use getAudioProperties().setAudioDelay(int audioDelay) instead
+	 * @deprecated Use getAudioProperties().setAudioDelay(int audioDelay) instead
 	 */
 	@Deprecated
 	public void setDelay(int audioDelay) {
@@ -549,28 +554,32 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 	}
 
 	/**
-	 * Returns the flavor for the audio.
-	 * 
-	 * @return The flavor.
-	 * @since 1.50
+	 * @deprecated use getAudioTrackTitleFromMetadata()
 	 */
+	@Deprecated
 	public String getFlavor() {
-		return flavor;
+		return getAudioTrackTitleFromMetadata();
 	}
 
 	/**
-	 * Sets the flavor for the audio.
-	 * 
-	 * @param flavor The flavor to set.
-	 * @since 1.50
+	 * @deprecated use setAudioTrackTitleFromMetadata()
 	 */
-	public void setFlavor(String flavor) {
-		this.flavor = flavor;
+	@Deprecated
+	public void setFlavor(String value) {
+		setAudioTrackTitleFromMetadata(value);
+	}
+
+	public String getAudioTrackTitleFromMetadata() {
+		return audioTrackTitleFromMetadata;
+	}
+
+	public void setAudioTrackTitleFromMetadata(String value) {
+		this.audioTrackTitleFromMetadata = value;
 	}
 
 	/**
 	 * Returns the audio codec to use for muxing.
-	 * 
+	 *
 	 * @return The audio codec to use.
 	 * @since 1.50
 	 */
@@ -580,7 +589,7 @@ public class DLNAMediaAudio extends DLNAMediaLang implements Cloneable {
 
 	/**
 	 * Sets the audio codec to use for muxing.
-	 * 
+	 *
 	 * @param muxingModeAudio The audio codec to use.
 	 * @since 1.50
 	 */

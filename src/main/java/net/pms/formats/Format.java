@@ -45,6 +45,7 @@ public abstract class Format implements Cloneable {
 
 	public enum Identifier {
 		AUDIO_AS_VIDEO,
+		BMP,
 		DVRMS,
 		FLAC,
 		GIF,
@@ -60,7 +61,8 @@ public abstract class Format implements Cloneable {
 		TIF,
 		WAV,
 		WEB,
-		CUSTOM
+		CUSTOM,
+		PLAYLIST
 	}
 
 	public static final int AUDIO    =  1;
@@ -255,17 +257,19 @@ public abstract class Format implements Cloneable {
 		return (Format) this.clone();
 	}
 
-	// method which allows us to fine tune parsing with different formats in the future
+	@Deprecated
 	public void parse(DLNAMediaInfo media, InputFile file, int type) {
 		parse(media, file, type, null);
 	}
 
-	// 2010-02-03 now this is useful :p
+	/**
+	 * Chooses which parsing method to parse the file with.
+	 */
 	public void parse(DLNAMediaInfo media, InputFile file, int type, RendererConfiguration renderer) {
-		if (renderer != null && renderer.isMediaParserV2()) {
-			renderer.getFormatConfiguration().parse(media, file, this, type);
+		if (renderer != null && renderer.isUseMediaInfo()) {
+			renderer.getFormatConfiguration().parse(media, file, this, type, renderer);
 		} else {
-			media.parse(file, this, type, false);
+			media.parse(file, this, type, false, false, renderer);
 		}
 
 		LOGGER.trace("Parsing results for file \"{}\": {}", file.toString(), media.toString());

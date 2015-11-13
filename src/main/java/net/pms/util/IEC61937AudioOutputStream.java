@@ -117,6 +117,8 @@ public class IEC61937AudioOutputStream extends FlowParserOutputStream {
 							case 2048 >> 5:
 								preamble[5] = 13;
 								break;
+							default:
+								break;
 						}
 					}
 					if (dtsHD) {
@@ -141,6 +143,8 @@ public class IEC61937AudioOutputStream extends FlowParserOutputStream {
 							case 16384:
 								subtype = 0x5;
 								break;
+							default:
+								break;
 						}
 						preamble[4] = subtype;
 						dtshdpreamble = new byte[12];
@@ -160,7 +164,7 @@ public class IEC61937AudioOutputStream extends FlowParserOutputStream {
 					pcm_wrapped_frame_size = period * 4;
 				}
 				if (framesize > pcm_wrapped_frame_size) {
-					framesize = framesize - framesize_sup;
+					framesize -= framesize_sup;
 				}
 				streamableByteNumber = framesize;
 				if (dtshdpreamble != null) {
@@ -192,8 +196,8 @@ public class IEC61937AudioOutputStream extends FlowParserOutputStream {
 						framesize = i;
 						streamableByteNumber = framesize;
 						int pcm_wrapped_frame_size = 6144; // padding_bytes = number_of_samples_in_the_audio_frame * 4 - frame_size
-						if (out instanceof PCMAudioOutputStream) {
-							PCMAudioOutputStream pout = (PCMAudioOutputStream) out;
+						if (out != null) {
+							PCMAudioOutputStream pout = out;
 							pout.nbchannels = 2;
 							pout.sampleFrequency = 48000;
 							pout.bitsperSample = 16;

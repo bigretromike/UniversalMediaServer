@@ -26,7 +26,7 @@ public class SearchAction extends VirtualFolder {
 	}
 
 	@Override
-	public void resolve() {
+	public synchronized void resolve() {
 		setDiscovered(false);  // we can't clear this enough
 	}
 
@@ -50,11 +50,6 @@ public class SearchAction extends VirtualFolder {
 	@Override
 	public long length() {
 		return -1; //DLNAMediaInfo.TRANS_SIZE;
-	}
-
-	@Override
-	public long lastModified() {
-		return 0;
 	}
 
 	@Override

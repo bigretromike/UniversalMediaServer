@@ -62,13 +62,13 @@ public class WindowsNamedPipe extends Thread implements ProcessWrapper {
 
 		Kernel32 SYNC_INSTANCE = (Kernel32) Native.synchronizedLibrary(INSTANCE);
 
-		class SECURITY_ATTRIBUTES extends Structure {
+		abstract class SECURITY_ATTRIBUTES extends Structure {
 			public int nLength = size();
 			public Pointer lpSecurityDescriptor;
 			public boolean bInheritHandle;
 		}
 
-		public static class LPOVERLAPPED extends Structure { }
+		public static abstract class LPOVERLAPPED extends Structure { }
 
 		Pointer CreateNamedPipeA(String lpName, int dwOpenMode, int dwPipeMode,
 			int nMaxInstances, int nOutBufferSize, int nInBufferSize,
@@ -146,13 +146,11 @@ public class WindowsNamedPipe extends Thread implements ProcessWrapper {
 	}
 
 	/**
-	 * Set the loop to the specified value. When set to <code>true</code> the
-	 * code will loop.
+	 * Whether the code will loop.
 	 *
-	 * @param value The value to set.
+	 * @param value whether the code will loop.
 	 */
 	// XXX this can be handled in a shutdown hook
-	@Deprecated
 	public static void setLoop(boolean value) {
 		loop = value;
 	}

@@ -34,10 +34,10 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Contains the Windows specific native functionality. Do not try to instantiate on Linux/MacOS X !
- * @author zsombor
  *
+ * @author zsombor
  */
-public class WinUtils extends BasicSystemUtils implements SystemUtils {
+public class WinUtils extends BasicSystemUtils {
 	private static final Logger LOGGER = LoggerFactory.getLogger(WinUtils.class);
 	private static final PmsConfiguration configuration = PMS.getConfiguration();
 
@@ -64,6 +64,9 @@ public class WinUtils extends BasicSystemUtils implements SystemUtils {
 		int ES_DISPLAY_REQUIRED = 0x00000002;
 		int ES_SYSTEM_REQUIRED = 0x00000001;
 		int ES_CONTINUOUS = 0x80000000;
+
+		int GetACP();
+		int GetOEMCP();
 	}
 
 	private static final int KEY_READ = 0x20019;
@@ -150,10 +153,10 @@ public class WinUtils extends BasicSystemUtils implements SystemUtils {
 				char test[] = new char[2 + pathname.length() * 2];
 				int r = Kernel32.INSTANCE.GetShortPathNameW(pathname, test, test.length);
 				if (r > 0) {
-					LOGGER.debug("Forcing short path name on " + pathname);
+					LOGGER.trace("Forcing short path name on " + pathname);
 					return Native.toString(test);
 				} else {
-					LOGGER.info("File does not exist? " + pathname);
+					LOGGER.debug("Can't find " + pathname);
 					return null;
 				}
 
@@ -216,6 +219,22 @@ public class WinUtils extends BasicSystemUtils implements SystemUtils {
 		} catch (Exception e) {
 			return null;
 		}
+	}
+
+	/**
+	 * For description see <a HREF="https://msdn.microsoft.com/en-us/library/windows/desktop/dd318070%28v=vs.85%29.aspx">MSDN GetACP</a>
+	 * @return the value from Windows API GetACP()
+	 */
+	public static int getACP() {
+		return Kernel32.INSTANCE.GetACP();
+	}
+
+	/**
+	 * For description see <a HREF="https://msdn.microsoft.com/en-us/library/windows/desktop/dd318114%28v=vs.85%29.aspx">MSDN GetOEMCP</a>
+	 * @return the value from Windows API GetOEMCP()
+	 */
+	public static int getOEMCP() {
+		return Kernel32.INSTANCE.GetOEMCP();
 	}
 
 	private String charString2String(CharBuffer buf) {
@@ -324,6 +343,25 @@ public class WinUtils extends BasicSystemUtils implements SystemUtils {
 
 	@Override
 	public String[] getPingCommand(String hostAddress, int count, int packetSize) {
-		return new String[] { "ping", /* count */ "-n" , Integer.toString(count), /* size */ "-l", Integer.toString(packetSize), hostAddress };
+		String cmd = PMS.getConfiguration().pingPath();
+		if (cmd == null) {
+			return new String[]{"ping", /* count */ "-n", Integer.toString(count), /* size */ "-l", Integer.toString(packetSize), hostAddress};
+		} else {
+			return new String[]{cmd, /*warmup */ "-w", "0", "-i", "0", /* count */ "-n", Integer.toString(count), /* size */ "-l", Integer.toString(packetSize), hostAddress};
+		}
+
+	}
+
+	@Override
+	public String parsePingLine(String line) {
+		if (PMS.getConfiguration().pingPath() == null) {
+			return super.parsePingLine(line);
+		}
+		int msPos = line.indexOf("ms");
+
+		if (msPos == -1) {
+			return null;
+		}
+		return line.substring(line.lastIndexOf(':', msPos) + 1, msPos).trim();
 	}
 }

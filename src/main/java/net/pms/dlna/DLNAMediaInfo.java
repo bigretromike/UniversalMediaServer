@@ -22,25 +22,10 @@ import java.awt.Color;
 import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.image.BufferedImage;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.ListIterator;
-import java.util.Locale;
-import java.util.Map;
-import java.util.NoSuchElementException;
-import java.util.StringTokenizer;
-import javax.imageio.IIOException;
+import java.io.*;
+import java.util.*;
 import javax.imageio.ImageIO;
 import net.coobird.thumbnailator.Thumbnails;
-import net.coobird.thumbnailator.Thumbnails.Builder;
-import net.coobird.thumbnailator.tasks.UnsupportedFormatException;
 import net.pms.PMS;
 import net.pms.configuration.PmsConfiguration;
 import net.pms.configuration.RendererConfiguration;
@@ -55,7 +40,8 @@ import net.pms.util.FileUtil;
 import net.pms.util.MpegUtil;
 import net.pms.util.ProcessUtil;
 import static net.pms.util.StringUtil.*;
-import org.apache.commons.lang3.StringUtils;
+import static org.apache.commons.lang3.StringUtils.isNotBlank;
+import static org.apache.commons.lang3.StringUtils.isBlank;
 import org.apache.sanselan.ImageInfo;
 import org.apache.sanselan.ImageReadException;
 import org.apache.sanselan.Sanselan;
@@ -87,7 +73,6 @@ import org.slf4j.LoggerFactory;
  */
 public class DLNAMediaInfo implements Cloneable {
 	private static final Logger LOGGER = LoggerFactory.getLogger(DLNAMediaInfo.class);
-	private static final String THUMBNAIL_DIRECTORY_NAME = "thumbs";
 	private static final PmsConfiguration configuration = PMS.getConfiguration();
 
 	public static final long ENDFILE_POS = 99999475712L;
@@ -149,6 +134,7 @@ public class DLNAMediaInfo implements Cloneable {
 	@Deprecated
 	public String aspect;
 
+	public String aspectRatioDvdIso;
 	public String aspectRatioContainer;
 	public String aspectRatioVideoTrack;
 
@@ -172,6 +158,7 @@ public class DLNAMediaInfo implements Cloneable {
 
 	private byte referenceFrameCount = -1;
 	private String avcLevel = null;
+	private String h264Profile = null;
 
 	private List<DLNAMediaAudio> audioTracks = new ArrayList<>();
 	private List<DLNAMediaSubtitle> subtitleTracks = new ArrayList<>();
@@ -231,9 +218,12 @@ public class DLNAMediaInfo implements Cloneable {
 	@Deprecated
 	public boolean mediaparsed;
 
+	public boolean ffmpegparsed;
+
 	/**
-	 * isMediaParserV2 related, used to manage thumbnail management separated
+	 * isUseMediaInfo-related, used to manage thumbnail management separated
 	 * from the main parsing process.
+	 *
 	 * @deprecated Use standard getter and setter to access this variable.
 	 */
 	@Deprecated
@@ -275,6 +265,83 @@ public class DLNAMediaInfo implements Cloneable {
 	public String matrixCoefficients;
 
 	/**
+	 * @deprecated Use standard getter and setter to access this variable.
+	 */
+	@Deprecated
+	public boolean embeddedFontExists = false;
+
+	/**
+	 * @deprecated Use standard getter and setter to access this variable.
+	 */
+	@Deprecated
+	public String stereoscopy;
+
+	/**
+	 * @deprecated Use standard getter and setter to access this variable.
+	 */
+	@Deprecated
+	public String fileTitleFromMetadata;
+
+	/**
+	 * @deprecated Use standard getter and setter to access this variable.
+	 */
+	@Deprecated
+	public String videoTrackTitleFromMetadata;
+
+	private boolean gen_thumb;
+
+	private int videoTrackCount = 0;
+	private int imageCount = 0;
+
+	public int getVideoTrackCount() {
+		return videoTrackCount;
+	}
+
+	public void setVideoTrackCount(int value) {
+		videoTrackCount = value;
+	}
+
+	public int getAudioTrackCount() {
+		return audioTracks.size();
+	}
+
+	public int getImageCount() {
+		return imageCount;
+	}
+
+	public void setImageCount(int value) {
+		imageCount = value;
+	}
+
+	public int getSubTrackCount() {
+		return subtitleTracks.size();
+	}
+
+	public boolean isVideo() {
+		return videoTrackCount > 0;
+	}
+
+	public boolean isAudio() {
+		return videoTrackCount == 0 && audioTracks.size() == 1;
+	}
+
+	public boolean hasAudio() {
+		return audioTracks.size() > 0;
+	}
+
+	/**
+	 * @return the number of subtitle tracks embedded in the media file.
+	 */
+
+	public boolean hasSubtitles() {
+		return subtitleTracks.size() > 0;
+	}
+
+	public boolean isImage() {
+		return videoTrackCount == 0 && audioTracks.size() == 0 && imageCount > 0;
+	}
+
+	/**
 	 * Used to determine whether tsMuxeR can mux the file to the renderer
 	 * instead of transcoding.
 	 * Also used by DLNAResource to help determine the DLNA.ORG_PN (file type)
@@ -294,20 +361,23 @@ public class DLNAMediaInfo implements Cloneable {
 	 */
 	public boolean isMuxable(RendererConfiguration mediaRenderer) {
 		// Make sure the file is H.264 video
-		if (getCodecV() != null && getCodecV().equals("h264")) {
+		if (isH264()) {
 			muxable = true;
 		}
 
 		// Check if the renderer supports the resolution of the video
 		if (
 			(
-				mediaRenderer.isVideoRescale() &&
+				mediaRenderer.isMaximumResolutionSpecified() &&
 				(
-					getWidth() > mediaRenderer.getMaxVideoWidth() ||
-					getHeight() > mediaRenderer.getMaxVideoHeight()
+					width > mediaRenderer.getMaxVideoWidth() ||
+					height > mediaRenderer.getMaxVideoHeight()
 				)
 			) ||
-			!isMod4()
+			(
+				!mediaRenderer.isMuxNonMod4Resolution() &&
+				!isMod4()
+			)
 		) {
 			muxable = false;
 		}
@@ -315,11 +385,63 @@ public class DLNAMediaInfo implements Cloneable {
 		// Temporary fix: MediaInfo support will take care of this in the future
 		// For now, http://ps3mediaserver.org/forum/viewtopic.php?f=11&t=6361&start=0
 		// Bravia does not support AVC video at less than 288px high
-		if (mediaRenderer.isBRAVIA() && getHeight() < 288) {
+		if (mediaRenderer.isBRAVIA() && height < 288) {
 			muxable = false;
 		}
 
 		return muxable;
+	}
+
+	/**
+	 * Whether a file is a WEB-DL release.
+	 *
+	 * It's important for some devices like PS3 because WEB-DL files often have
+	 * some difference (possibly not starting on a keyframe or something to do with
+	 * SEI output from MEncoder, possibly something else) that makes the PS3 not
+	 * accept them when output from tsMuxeR via MEncoder.
+	 *
+	 * The above statement may not be applicable when using tsMuxeR via FFmpeg
+	 * so we should reappraise the situation if we make that change.
+	 *
+	 * It is unlikely it will return false-positives but it will return
+	 * false-negatives.
+	 *
+	 * @param filename the filename
+	 * @param params the file properties
+	 *
+	 * @return whether a file is a WEB-DL release
+	 */
+	public boolean isWebDl(String filename, OutputParams params) {
+		// Check the filename
+		if (filename.toLowerCase().replaceAll("\\-", "").contains("webdl")) {
+			return true;
+		}
+
+		// Check the metadata
+		if (
+			(
+				getFileTitleFromMetadata() != null &&
+				getFileTitleFromMetadata().toLowerCase().replaceAll("\\-", "").contains("webdl")
+			) ||
+			(
+				getVideoTrackTitleFromMetadata() != null &&
+				getVideoTrackTitleFromMetadata().toLowerCase().replaceAll("\\-", "").contains("webdl")
+			) ||
+			(
+				params.aid != null &&
+				params.aid.getAudioTrackTitleFromMetadata() != null &&
+				params.aid.getAudioTrackTitleFromMetadata().toLowerCase().replaceAll("\\-", "").contains("webdl")
+			) ||
+			(
+				params.sid != null &&
+				params.sid.getSubtitlesTrackTitleFromMetadata() != null &&
+				params.sid.getSubtitlesTrackTitleFromMetadata().toLowerCase().replaceAll("\\-", "").contains("webdl")
+			)
+		) {
+			return true;
+		}
+
+		return false;
 	}
 
 	public Map<String, String> getExtras() {
@@ -366,46 +488,82 @@ public class DLNAMediaInfo implements Cloneable {
 	}
 
 	public DLNAMediaInfo() {
-		setThumbready(true); // this class manages thumbnails by default with the parser_v1 method
+		thumbready = true; // this class manages thumbnails by default with the parser_v1 method
+		gen_thumb = false;
 	}
 
-	public void generateThumbnail(InputFile input, Format ext, int type) {
+	@Deprecated
+	public void generateThumbnail(InputFile input, Format ext, int type, Double seekPosition, boolean resume) {
+		generateThumbnail(input, ext, type, seekPosition, resume, null);
+	}
+
+	public void generateThumbnail(InputFile input, Format ext, int type, Double seekPosition, boolean resume, RendererConfiguration renderer) {
 		DLNAMediaInfo forThumbnail = new DLNAMediaInfo();
-		forThumbnail.durationSec = durationSec;
-		forThumbnail.parse(input, ext, type, true);
-		setThumb(forThumbnail.getThumb());
+		forThumbnail.gen_thumb = true;
+		forThumbnail.durationSec = getDurationInSeconds();
+
+		if (seekPosition <= forThumbnail.durationSec) {
+			forThumbnail.durationSec = seekPosition;
+		} else {
+			forThumbnail.durationSec /= 2;
+		}
+
+		forThumbnail.parse(input, ext, type, true, resume, renderer);
+		thumb = forThumbnail.thumb;
 	}
 
-	private ProcessWrapperImpl getFFMpegThumbnail(InputFile media) {
+	private ProcessWrapperImpl getFFmpegThumbnail(InputFile media, boolean resume, RendererConfiguration renderer) {
+		/**
+		 * Note: The text output from FFmpeg is used by renderers that do
+		 * not use MediaInfo, so do not make any changes that remove or
+		 * minimize the amount of text given by FFmpeg here
+		 */
 		String args[] = new String[14];
 		args[0] = getFfmpegPath();
-		boolean dvrms = media.getFile() != null && media.getFile().getAbsolutePath().toLowerCase().endsWith("dvr-ms");
+		File file = media.getFile();
+		boolean dvrms = file != null && file.getAbsolutePath().toLowerCase().endsWith("dvr-ms");
 
-		if (dvrms && StringUtils.isNotBlank(configuration.getFfmpegAlternativePath())) {
+		if (dvrms && isNotBlank(configuration.getFfmpegAlternativePath())) {
 			args[0] = configuration.getFfmpegAlternativePath();
 		}
 
 		args[1] = "-ss";
-		args[2] = "" + configuration.getThumbnailSeekPos();
+		if (resume) {
+			args[2] = "" + (int) getDurationInSeconds();
+		} else {
+			args[2] = "" + configuration.getThumbnailSeekPos();
+		}
+
 		args[3] = "-i";
 
-		if (media.getFile() != null) {
-			args[4] = ProcessUtil.getShortFileNameIfWideChars(media.getFile().getAbsolutePath());
+		if (file != null) {
+			args[4] = ProcessUtil.getShortFileNameIfWideChars(file.getAbsolutePath());
 		} else {
 			args[4] = "-";
 		}
 
 		args[5] = "-an";
 		args[6] = "-an";
-		args[7] = "-s";
-		args[8] = "320x180";
+
+		// Thumbnail resolution
+		int thumbnailWidth  = 320;
+		int thumbnailHeight = 180;
+		double thumbnailRatio  = 1.78;
+		if (renderer != null) {
+			thumbnailWidth  = renderer.getThumbnailWidth();
+			thumbnailHeight = renderer.getThumbnailHeight();
+			thumbnailRatio  = renderer.getThumbnailRatio();
+		}
+
+		args[7] = "-vf";
+		args[8] = "scale='if(gt(a," + thumbnailRatio + ")," + thumbnailWidth + ",-1)':'if(gt(a," + thumbnailRatio + "),-1," + thumbnailHeight + ")', pad=" + thumbnailWidth + ":" + thumbnailHeight + ":(" + thumbnailWidth + "-iw)/2:(" + thumbnailHeight + "-ih)/2";
 		args[9] = "-vframes";
 		args[10] = "1";
 		args[11] = "-f";
 		args[12] = "image2";
 		args[13] = "pipe:";
 
-		// FIXME MPlayer should not be used if thumbnail generation is disabled (and it should be disabled in the GUI)
+		// FIXME MPlayer should not be used if thumbnail generation is disabled
 		if (!configuration.isThumbnailGenerationEnabled() || (configuration.isUseMplayerForVideoThumbs() && !dvrms)) {
 			args[2] = "0";
 			for (int i = 5; i <= 13; i++) {
@@ -422,7 +580,7 @@ public class DLNAMediaInfo implements Cloneable {
 		final ProcessWrapperImpl pw = new ProcessWrapperImpl(args, params, false, true);
 
 		// FAILSAFE
-		setParsing(true);
+		parsing = true;
 		Runnable r = new Runnable() {
 			@Override
 			public void run() {
@@ -432,27 +590,32 @@ public class DLNAMediaInfo implements Cloneable {
 				} catch (InterruptedException e) { }
 
 				pw.stopProcess();
-				setParsing(false);
+				parsing = false;
 			}
 		};
 
 		Thread failsafe = new Thread(r, "FFmpeg Thumbnail Failsafe");
 		failsafe.start();
 		pw.runInSameThread();
-		setParsing(false);
+		parsing = false;;
 		return pw;
 	}
 
-	private ProcessWrapperImpl getMplayerThumbnail(InputFile media) throws IOException {
+	private ProcessWrapperImpl getMplayerThumbnail(InputFile media, boolean resume) throws IOException {
+		File file = media.getFile();
 		String args[] = new String[14];
 		args[0] = configuration.getMplayerPath();
 		args[1] = "-ss";
-		boolean toolong = getDurationInSeconds() < configuration.getThumbnailSeekPos();
-		args[2] = "" + (toolong ? (getDurationInSeconds() / 2) : configuration.getThumbnailSeekPos());
+		if (resume) {
+			args[2] = "" + (int) getDurationInSeconds();
+		} else {
+			args[2] = "" + configuration.getThumbnailSeekPos();
+		}
+
 		args[3] = "-quiet";
 
-		if (media.getFile() != null) {
-			args[4] = ProcessUtil.getShortFileNameIfWideChars(media.getFile().getAbsolutePath());
+		if (file != null) {
+			args[4] = ProcessUtil.getShortFileNameIfWideChars(file.getAbsolutePath());
 		} else {
 			args[4] = "-";
 		}
@@ -478,7 +641,7 @@ public class DLNAMediaInfo implements Cloneable {
 		final ProcessWrapperImpl pw = new ProcessWrapperImpl(args, params);
 
 		// FAILSAFE
-		setParsing(true);
+		parsing = true;
 		Runnable r = new Runnable() {
 			@Override
 			public void run() {
@@ -487,14 +650,14 @@ public class DLNAMediaInfo implements Cloneable {
 				} catch (InterruptedException e) { }
 
 				pw.stopProcess();
-				setParsing(false);
+				parsing = false;
 			}
 		};
 
 		Thread failsafe = new Thread(r, "MPlayer Thumbnail Failsafe");
 		failsafe.start();
 		pw.runInSameThread();
-		setParsing(false);
+		parsing = false;
 		return pw;
 	}
 
@@ -509,12 +672,20 @@ public class DLNAMediaInfo implements Cloneable {
 		}
 	}
 
-	public void parse(InputFile inputFile, Format ext, int type, boolean thumbOnly) {
+	@Deprecated
+	public void parse(InputFile inputFile, Format ext, int type, boolean thumbOnly, boolean resume) {
+		parse(inputFile, ext, type, thumbOnly, resume, null);
+	}
+
+	/**
+	 * Parse media without using MediaInfo.
+	 */
+	public void parse(InputFile inputFile, Format ext, int type, boolean thumbOnly, boolean resume, RendererConfiguration renderer) {
 		int i = 0;
 
 		while (isParsing()) {
 			if (i == 5) {
-				setMediaparsed(true);
+				mediaparsed = true;
 				break;
 			}
 
@@ -530,10 +701,11 @@ public class DLNAMediaInfo implements Cloneable {
 		}
 
 		if (inputFile != null) {
-			if (inputFile.getFile() != null) {
-				setSize(inputFile.getFile().length());
+			File file = inputFile.getFile();
+			if (file != null) {
+				size = file.length();
 			} else {
-				setSize(inputFile.getSize());
+				size = inputFile.getSize();
 			}
 
 			ProcessWrapperImpl pw = null;
@@ -543,9 +715,9 @@ public class DLNAMediaInfo implements Cloneable {
 				ffmpeg_parsing = false;
 				DLNAMediaAudio audio = new DLNAMediaAudio();
 
-				if (inputFile.getFile() != null) {
+				if (file != null) {
 					try {
-						AudioFile af = AudioFileIO.read(inputFile.getFile());
+						AudioFile af = AudioFileIO.read(file);
 						AudioHeader ah = af.getAudioHeader();
 
 						if (ah != null && !thumbOnly) {
@@ -557,8 +729,8 @@ public class DLNAMediaInfo implements Cloneable {
 							}
 
 							audio.setSampleFrequency("" + rate);
-							setDuration((double) length);
-							setBitrate((int) ah.getBitRateAsNumber());
+							durationSec = (double) length;
+							bitrate = (int) ah.getBitRateAsNumber();
 							audio.getAudioProperties().setNumberOfChannels(2);
 
 							if (ah.getChannels() != null && ah.getChannels().toLowerCase().contains("mono")) {
@@ -580,17 +752,16 @@ public class DLNAMediaInfo implements Cloneable {
 
 						if (t != null) {
 							if (t.getArtworkList().size() > 0) {
-								setThumb(t.getArtworkList().get(0).getBinaryData());
+								thumb = t.getArtworkList().get(0).getBinaryData();
 							} else {
 								if (configuration.getAudioThumbnailMethod() > 0) {
-									setThumb(
+									thumb =
 										CoverUtil.get().getThumbnailFromArtistAlbum(
 											configuration.getAudioThumbnailMethod() == 1 ?
 												CoverUtil.AUDIO_AMAZON :
 												CoverUtil.AUDIO_DISCOGS,
 											audio.getArtist(), audio.getAlbum()
-										)
-									);
+										);
 								}
 							}
 
@@ -618,404 +789,121 @@ public class DLNAMediaInfo implements Cloneable {
 						ffmpeg_parsing = false;
 					}
 
-					if (audio.getSongname() == null || audio.getSongname().length() == 0) {
-						audio.setSongname(inputFile.getFile().getName());
+					if (audio.getSongname() != null && audio.getSongname().length() > 0) {
+						if (renderer != null && renderer.isPrependTrackNumbers() && audio.getTrack() > 0) {
+							audio.setSongname(audio.getTrack() + ": " + audio.getSongname());
+						}
+					} else {
+						audio.setSongname(file.getName());
 					}
 
 					if (!ffmpeg_parsing) {
-						getAudioTracksList().add(audio);
+						audioTracks.add(audio);
 					}
 				}
 			}
 
-			if (type == Format.IMAGE && inputFile.getFile() != null) {
+			if (type == Format.IMAGE && file != null) {
 				try {
 					ffmpeg_parsing = false;
-					ImageInfo info = Sanselan.getImageInfo(inputFile.getFile());
-					setWidth(info.getWidth());
-					setHeight(info.getHeight());
-					setBitsPerPixel(info.getBitsPerPixel());
+					ImageInfo info = Sanselan.getImageInfo(file);
+					width = info.getWidth();
+					height = info.getHeight();
+					bitsPerPixel = info.getBitsPerPixel();
 					String formatName = info.getFormatName();
 
 					if (formatName.startsWith("JPEG")) {
-						setCodecV("jpg");
-						IImageMetadata meta = Sanselan.getMetadata(inputFile.getFile());
+						codecV = "jpg";
+						IImageMetadata meta = Sanselan.getMetadata(file);
 
 						if (meta != null && meta instanceof JpegImageMetadata) {
 							JpegImageMetadata jpegmeta = (JpegImageMetadata) meta;
 							TiffField tf = jpegmeta.findEXIFValue(TiffConstants.EXIF_TAG_MODEL);
 
 							if (tf != null) {
-								setModel(tf.getStringValue().trim());
+								model = tf.getStringValue().trim();
 							}
 
 							tf = jpegmeta.findEXIFValue(TiffConstants.EXIF_TAG_EXPOSURE_TIME);
 							if (tf != null) {
-								setExposure((int) (1000 * tf.getDoubleValue()));
+								exposure = (int) (1000 * tf.getDoubleValue());
 							}
 
 							tf = jpegmeta.findEXIFValue(TiffConstants.EXIF_TAG_ORIENTATION);
 							if (tf != null) {
-								setOrientation(tf.getIntValue());
+								orientation = tf.getIntValue();
 							}
 
 							tf = jpegmeta.findEXIFValue(TiffConstants.EXIF_TAG_ISO);
 							if (tf != null) {
 								// Galaxy Nexus jpg pictures may contain multiple values, take the first
 								int[] isoValues = tf.getIntArrayValue();
-								setIso(isoValues[0]);
+								iso = isoValues[0];
 							}
 						}
 					} else if (formatName.startsWith("PNG")) {
-						setCodecV("png");
+						codecV = "png";
 					} else if (formatName.startsWith("GIF")) {
-						setCodecV("gif");
+						codecV = "gif";
 					} else if (formatName.startsWith("TIF")) {
-						setCodecV("tiff");
+						codecV = "tiff";
 					}
 
-					setContainer(getCodecV());
+					container = codecV;
+					imageCount++;
 				} catch (ImageReadException | IOException e) {
-					LOGGER.info("Error parsing image ({}) with Sanselan, switching to FFmpeg.", inputFile.getFile().getAbsolutePath());
+					LOGGER.info("Error parsing image ({}) with Sanselan, switching to FFmpeg.", file.getAbsolutePath());
 				}
-			}
+				if (configuration.getImageThumbnailsEnabled() && gen_thumb) {
+					LOGGER.trace("Creating (temporary) thumbnail: {}", file.getName());
 
-			if (configuration.getImageThumbnailsEnabled() && type != Format.VIDEO && type != Format.AUDIO) {
-				try {
-					File thumbDir = new File(configuration.getTempFolder(), THUMBNAIL_DIRECTORY_NAME);
+					// Create the thumbnail image using the Thumbnailator library
+					try {
+						ByteArrayOutputStream out = new ByteArrayOutputStream();
+						Thumbnails.of(file)
+								.size(320, 180)
+								.outputFormat("JPEG")
+								.outputQuality(1.0f)
+								.toOutputStream(out);
 
-					LOGGER.trace("Generating thumbnail for: {}", inputFile.getFile().getAbsolutePath());
-
-					if (!thumbDir.exists() && !thumbDir.mkdirs()) {
-						LOGGER.warn("Could not create thumbnail directory: {}", thumbDir.getAbsolutePath());
-					} else {
-						File thumbFile = new File(thumbDir, inputFile.getFile().getName() + ".jpg");
-						String thumbFilename = thumbFile.getAbsolutePath();
-
-						LOGGER.trace("Creating (temporary) thumbnail: {}", thumbFilename);
-
-						// Create the thumbnail image using the Thumbnailator library
-						final Builder<File> thumbnail = Thumbnails.of(inputFile.getFile());
-						thumbnail.size(320, 180);
-						thumbnail.outputFormat("jpg");
-						thumbnail.outputQuality(1.0f);
-
-						try {
-							thumbnail.toFile(thumbFilename);
-						} catch (IIOException e) {
-							LOGGER.debug("Error generating thumbnail for: " + inputFile.getFile().getName());
-							LOGGER.debug("The full error was: " + e);
-						}
-
-						File jpg = new File(thumbFilename);
-
-						if (jpg.exists()) {
-							try (InputStream is = new FileInputStream(jpg)) {
-								int sz = is.available();
-
-								if (sz > 0) {
-									setThumb(new byte[sz]);
-									is.read(getThumb());
-								}
-							}
-
-							if (!jpg.delete()) {
-								jpg.deleteOnExit();
-							}
-						}
+						thumb = out.toByteArray();
+					} catch (IOException | IllegalArgumentException | IllegalStateException e) {
+						LOGGER.debug("Error generating thumbnail for: " + file.getName());
+						LOGGER.debug("The full error was: " + e);
 					}
-				} catch (UnsupportedFormatException ufe) {
-					LOGGER.debug("Thumbnailator does not support the format of {}: {}", inputFile.getFile().getAbsolutePath(), ufe.getMessage());
-				} catch (Exception e) {
-					LOGGER.debug("Thumbnailator could not generate a thumbnail for: {}", inputFile.getFile().getAbsolutePath(), e);
 				}
 			}
 
 			if (ffmpeg_parsing) {
 				if (!thumbOnly || !configuration.isUseMplayerForVideoThumbs()) {
-					pw = getFFMpegThumbnail(inputFile);
+					pw = getFFmpegThumbnail(inputFile, resume, renderer);
 				}
 
-				String input = "-";
 				boolean dvrms = false;
+				String input = "-";
 
-				if (inputFile.getFile() != null) {
-					input = ProcessUtil.getShortFileNameIfWideChars(inputFile.getFile().getAbsolutePath());
-					dvrms = inputFile.getFile().getAbsolutePath().toLowerCase().endsWith("dvr-ms");
+				if (file != null) {
+					input = ProcessUtil.getShortFileNameIfWideChars(file.getAbsolutePath());
+					dvrms = file.getAbsolutePath().toLowerCase().endsWith("dvr-ms");
 				}
 
-				if (!ffmpeg_failure && !thumbOnly) {
-					if (input.equals("-")) {
-						input = "pipe:";
-					}
-
-					boolean matchs = false;
-					ArrayList<String> lines = (ArrayList<String>) pw.getResults();
-					int langId = 0;
-					int subId = 0;
-					ListIterator<String> FFmpegMetaData = lines.listIterator();
-
-					for (String line : lines) {
-						FFmpegMetaData.next();
-						line = line.trim();
-						if (line.startsWith("Output")) {
-							matchs = false;
-						} else if (line.startsWith("Input")) {
-							if (line.indexOf(input) > -1) {
-								matchs = true;
-								setContainer(line.substring(10, line.indexOf(',', 11)).trim());
-							} else {
-								matchs = false;
-							}
-						} else if (matchs) {
-							if (line.indexOf("Duration") > -1) {
-								StringTokenizer st = new StringTokenizer(line, ",");
-								while (st.hasMoreTokens()) {
-									String token = st.nextToken().trim();
-									if (token.startsWith("Duration: ")) {
-										String durationStr = token.substring(10);
-										int l = durationStr.substring(durationStr.indexOf('.') + 1).length();
-										if (l < 4) {
-											durationStr += "00".substring(0, 3 - l);
-										}
-										if (durationStr.indexOf("N/A") > -1) {
-											setDuration(null);
-										} else {
-											setDuration(parseDurationString(durationStr));
-										}
-									} else if (token.startsWith("bitrate: ")) {
-										String bitr = token.substring(9);
-										int spacepos = bitr.indexOf(' ');
-										if (spacepos > -1) {
-											String value = bitr.substring(0, spacepos);
-											String unit = bitr.substring(spacepos + 1);
-											setBitrate(Integer.parseInt(value));
-											if (unit.equals("kb/s")) {
-												setBitrate(1024 * getBitrate());
-											}
-											if (unit.equals("mb/s")) {
-												setBitrate(1048576 * getBitrate());
-											}
-										}
-									}
-								}
-							} else if (line.indexOf("Audio:") > -1) {
-								StringTokenizer st = new StringTokenizer(line, ",");
-								int a = line.indexOf('(');
-								int b = line.indexOf("):", a);
-								DLNAMediaAudio audio = new DLNAMediaAudio();
-								audio.setId(langId++);
-								if (a > -1 && b > a) {
-									audio.setLang(line.substring(a + 1, b));
-								} else {
-									audio.setLang(DLNAMediaLang.UND);
-								}
-
-								// Get TS IDs
-								a = line.indexOf("[0x");
-								b = line.indexOf(']', a);
-								if (a > -1 && b > a + 3) {
-									String idString = line.substring(a + 3, b);
-									try {
-										audio.setId(Integer.parseInt(idString, 16));
-									} catch (NumberFormatException nfe) {
-										LOGGER.debug("Error parsing Stream ID: " + idString);
-									}
-								}
-
-								while (st.hasMoreTokens()) {
-									String token = st.nextToken().trim();
-									if (token.startsWith("Stream")) {
-										audio.setCodecA(token.substring(token.indexOf("Audio: ") + 7));
-									} else if (token.endsWith("Hz")) {
-										audio.setSampleFrequency(token.substring(0, token.indexOf("Hz")).trim());
-									} else if (token.equals("mono")) {
-										audio.getAudioProperties().setNumberOfChannels(1);
-									} else if (token.equals("stereo")) {
-										audio.getAudioProperties().setNumberOfChannels(2);
-									} else if (token.equals("5:1") || token.equals("5.1") || token.equals("6 channels")) {
-										audio.getAudioProperties().setNumberOfChannels(6);
-									} else if (token.equals("5 channels")) {
-										audio.getAudioProperties().setNumberOfChannels(5);
-									} else if (token.equals("4 channels")) {
-										audio.getAudioProperties().setNumberOfChannels(4);
-									} else if (token.equals("2 channels")) {
-										audio.getAudioProperties().setNumberOfChannels(2);
-									} else if (token.equals("s32")) {
-										audio.setBitsperSample(32);
-									} else if (token.equals("s24")) {
-										audio.setBitsperSample(24);
-									} else if (token.equals("s16")) {
-										audio.setBitsperSample(16);
-									}
-								}
-								int FFmpegMetaDataNr = FFmpegMetaData.nextIndex();
-
-								if (FFmpegMetaDataNr > -1) {
-									line = lines.get(FFmpegMetaDataNr);
-								}
-
-								if (line.indexOf("Metadata:") > -1) {
-									FFmpegMetaDataNr += 1;
-									line = lines.get(FFmpegMetaDataNr);
-									while (line.indexOf("      ") == 0) {
-										if (line.toLowerCase().indexOf("title           :") > -1) {
-											int aa = line.indexOf(": ");
-											int bb = line.length();
-											if (aa > -1 && bb > aa) {
-												audio.setFlavor(line.substring(aa+2, bb));
-												break;
-											}
-										} else {
-											FFmpegMetaDataNr += 1;
-											line = lines.get(FFmpegMetaDataNr);
-										}
-									}
-								}
-
-								getAudioTracksList().add(audio);
-							} else if (line.indexOf("Video:") > -1) {
-								StringTokenizer st = new StringTokenizer(line, ",");
-								while (st.hasMoreTokens()) {
-									String token = st.nextToken().trim();
-									if (token.startsWith("Stream")) {
-										setCodecV(token.substring(token.indexOf("Video: ") + 7));
-									} else if ((token.indexOf("tbc") > -1 || token.indexOf("tb(c)") > -1)) {
-										// A/V sync issues with newest FFmpeg, due to the new tbr/tbn/tbc outputs
-										// Priority to tb(c)
-										String frameRateDoubleString = token.substring(0, token.indexOf("tb")).trim();
-										try {
-											if (!frameRateDoubleString.equals(getFrameRate())) {// tbc taken into account only if different than tbr
-												Double frameRateDouble = Double.parseDouble(frameRateDoubleString);
-												setFrameRate(String.format(Locale.ENGLISH, "%.2f", frameRateDouble / 2));
-											}
-										} catch (NumberFormatException nfe) {
-											// Could happen if tbc is "1k" or something like that, no big deal
-											LOGGER.debug("Could not parse frame rate \"" + frameRateDoubleString + "\"");
-										}
-
-									} else if ((token.indexOf("tbr") > -1 || token.indexOf("tb(r)") > -1) && getFrameRate() == null) {
-										setFrameRate(token.substring(0, token.indexOf("tb")).trim());
-									} else if ((token.indexOf("fps") > -1 || token.indexOf("fps(r)") > -1) && getFrameRate() == null) { // dvr-ms ?
-										setFrameRate(token.substring(0, token.indexOf("fps")).trim());
-									} else if (token.indexOf('x') > -1 && !token.contains("max")) {
-										String resolution = token.trim();
-										if (resolution.indexOf(" [") > -1) {
-											resolution = resolution.substring(0, resolution.indexOf(" ["));
-										}
-										try {
-											setWidth(Integer.parseInt(resolution.substring(0, resolution.indexOf('x'))));
-										} catch (NumberFormatException nfe) {
-											LOGGER.debug("Could not parse width from \"" + resolution.substring(0, resolution.indexOf('x')) + "\"");
-										}
-										try {
-											setHeight(Integer.parseInt(resolution.substring(resolution.indexOf('x') + 1)));
-										} catch (NumberFormatException nfe) {
-											LOGGER.debug("Could not parse height from \"" + resolution.substring(resolution.indexOf('x') + 1) + "\"");
-										}
-									}
-								}
-							} else if (line.indexOf("Subtitle:") > -1) {
-								DLNAMediaSubtitle lang = new DLNAMediaSubtitle();
-
-								// $ ffmpeg -codecs | grep "^...S"
-								// ..S... = Subtitle codec
-								// DES... ass                  ASS (Advanced SSA) subtitle
-								// DES... dvb_subtitle         DVB subtitles (decoders: dvbsub ) (encoders: dvbsub )
-								// ..S... dvb_teletext         DVB teletext
-								// DES... dvd_subtitle         DVD subtitles (decoders: dvdsub ) (encoders: dvdsub )
-								// ..S... eia_608              EIA-608 closed captions
-								// D.S... hdmv_pgs_subtitle    HDMV Presentation Graphic Stream subtitles (decoders: pgssub )
-								// D.S... jacosub              JACOsub subtitle
-								// D.S... microdvd             MicroDVD subtitle
-								// DES... mov_text             MOV text
-								// D.S... mpl2                 MPL2 subtitle
-								// D.S... pjs                  PJS (Phoenix Japanimation Society) subtitle
-								// D.S... realtext             RealText subtitle
-								// D.S... sami                 SAMI subtitle
-								// DES... srt                  SubRip subtitle with embedded timing
-								// DES... ssa                  SSA (SubStation Alpha) subtitle
-								// DES... subrip               SubRip subtitle
-								// D.S... subviewer            SubViewer subtitle
-								// D.S... subviewer1           SubViewer v1 subtitle
-								// D.S... text                 raw UTF-8 text
-								// D.S... vplayer              VPlayer subtitle
-								// D.S... webvtt               WebVTT subtitle
-								// DES... xsub                 XSUB
-
-								if (line.contains("srt") || line.contains("subrip")) {
-									lang.setType(SubtitleType.SUBRIP);
-								} else if (line.contains(" text")) {
-									// excludes dvb_teletext, mov_text, realtext
-									lang.setType(SubtitleType.TEXT);
-								} else if (line.contains("microdvd")) {
-									lang.setType(SubtitleType.MICRODVD);
-								} else if (line.contains("sami")) {
-									lang.setType(SubtitleType.SAMI);
-								} else if (line.contains("ass") || line.contains("ssa")) {
-									lang.setType(SubtitleType.ASS);
-								} else if (line.contains("dvd_subtitle")) {
-									lang.setType(SubtitleType.VOBSUB);
-								} else if (line.contains("xsub")) {
-									lang.setType(SubtitleType.DIVX);
-								} else if (line.contains("mov_text")) {
-									lang.setType(SubtitleType.TX3G);
-								} else {
-									lang.setType(SubtitleType.UNKNOWN);
-								}
-
-								int a = line.indexOf('(');
-								int b = line.indexOf("):", a);
-								if (a > -1 && b > a) {
-									lang.setLang(line.substring(a + 1, b));
-								} else {
-									lang.setLang(DLNAMediaLang.UND);
-								}
-
-								lang.setId(subId++);
-								int FFmpegMetaDataNr = FFmpegMetaData.nextIndex();
-
-								if (FFmpegMetaDataNr > -1) {
-									line = lines.get(FFmpegMetaDataNr);
-								}
-
-								if (line.indexOf("Metadata:") > -1) {
-									FFmpegMetaDataNr += 1;
-									line = lines.get(FFmpegMetaDataNr);
-
-									while (line.indexOf("      ") == 0) {
-										if (line.toLowerCase().indexOf("title           :") > -1) {
-											int aa = line.indexOf(": ");
-											int bb = line.length();
-											if (aa > -1 && bb > aa) {
-												lang.setFlavor(line.substring(aa+2, bb));
-												break;
-											}
-										} else {
-											FFmpegMetaDataNr += 1;
-											line = lines.get(FFmpegMetaDataNr);
-										}
-									}
-								}
-								getSubtitleTracksList().add(lang);
-							}
-						}
-					}
+				if (pw != null && !ffmpeg_failure && !thumbOnly) {
+					parseFFmpegInfo(pw.getResults(), input);
 				}
 
 				if (
 					!thumbOnly &&
-					getContainer() != null &&
-					inputFile.getFile() != null &&
-					getContainer().equals("mpegts") &&
+					container != null &&
+					file != null &&
+					container.equals("mpegts") &&
 					isH264() &&
 					getDurationInSeconds() == 0
 				) {
 					// Parse the duration
 					try {
-						int length = MpegUtil.getDurationFromMpeg(inputFile.getFile());
+						int length = MpegUtil.getDurationFromMpeg(file);
 						if (length > 0) {
-							setDuration((double) length);
+							durationSec = (double) length;
 						}
 					} catch (IOException e) {
 						LOGGER.trace("Error retrieving length: " + e.getMessage());
@@ -1024,7 +912,7 @@ public class DLNAMediaInfo implements Cloneable {
 
 				if (configuration.isUseMplayerForVideoThumbs() && type == Format.VIDEO && !dvrms) {
 					try {
-						getMplayerThumbnail(inputFile);
+						getMplayerThumbnail(inputFile, resume);
 						String frameName = "" + inputFile.hashCode();
 						frameName = configuration.getTempFolder() + "/mplayer_thumbs/" + frameName + "00000001/00000001.jpg";
 						frameName = frameName.replace(',', '_');
@@ -1035,8 +923,8 @@ public class DLNAMediaInfo implements Cloneable {
 								int sz = is.available();
 
 								if (sz > 0) {
-									setThumb(new byte[sz]);
-									is.read(getThumb());
+									thumb = new byte[sz];
+									is.read(thumb);
 								}
 							}
 
@@ -1054,34 +942,37 @@ public class DLNAMediaInfo implements Cloneable {
 					}
 				}
 
-				if (type == Format.VIDEO && pw != null && getThumb() == null) {
+				if (type == Format.VIDEO && pw != null && thumb == null) {
 					InputStream is;
 					try {
+						int sz = 0;
 						is = pw.getInputStream(0);
-						int sz = is.available();
-						if (sz > 0) {
-							setThumb(new byte[sz]);
-							is.read(getThumb());
+						if (is != null) {
+							sz = is.available();
+							if (sz > 0) {
+								thumb = new byte[sz];
+								is.read(thumb);
+							}
+							is.close();
 						}
-						is.close();
 
 						if (sz > 0 && !net.pms.PMS.isHeadless()) {
-							BufferedImage image = ImageIO.read(new ByteArrayInputStream(getThumb()));
+							BufferedImage image = ImageIO.read(new ByteArrayInputStream(thumb));
 							if (image != null) {
 								Graphics g = image.getGraphics();
 								g.setColor(Color.WHITE);
 								g.setFont(new Font("Arial", Font.PLAIN, 14));
 								int low = 0;
-								if (getWidth() > 0) {
-									if (getWidth() == 1920 || getWidth() == 1440) {
+								if (width > 0) {
+									if (width == 1920 || width == 1440) {
 										g.drawString("1080p", 0, low += 18);
-									} else if (getWidth() == 1280) {
+									} else if (width == 1280) {
 										g.drawString("720p", 0, low += 18);
 									}
 								}
 								ByteArrayOutputStream out = new ByteArrayOutputStream();
 								ImageIO.write(image, "jpeg", out);
-								setThumb(out.toByteArray());
+								thumb = out.toByteArray();
 							}
 						}
 					} catch (IOException e) {
@@ -1091,16 +982,315 @@ public class DLNAMediaInfo implements Cloneable {
 			}
 
 			finalize(type, inputFile);
-			setMediaparsed(true);
+			mediaparsed = true;
 		}
 	}
 
+	/**
+	 * Parses media info from FFmpeg's stderr output
+	 *
+	 * @param lines The stderr output
+	 * @param input The FFmpeg input (-i) argument used
+	 */
+	public void parseFFmpegInfo(List<String> lines, String input) {
+
+		if (lines != null) {
+			if ("-".equals(input)) {
+				input = "pipe:";
+			}
+
+			boolean matchs = false;
+			int langId = 0;
+			int subId = 0;
+			ListIterator<String> FFmpegMetaData = lines.listIterator();
+
+			for (String line : lines) {
+				FFmpegMetaData.next();
+				line = line.trim();
+				if (line.startsWith("Output")) {
+					matchs = false;
+				} else if (line.startsWith("Input")) {
+					if (line.contains(input)) {
+						matchs = true;
+						container = line.substring(10, line.indexOf(',', 11)).trim();
+
+						/**
+						 * This method is very inaccurate because the Input line in the FFmpeg output
+						 * returns "mov,mp4,m4a,3gp,3g2,mj2" for all 6 of those formats, meaning that
+						 * we think they are all "mov".
+						 *
+						 * Here we workaround it by using the file extension, but the best idea is to
+						 * prevent using this method by using MediaInfo=true in renderer configs.
+						 */
+						if ("mov".equals(container)) {
+							container = line.substring(line.lastIndexOf('.') + 1, line.lastIndexOf("'")).trim();
+							LOGGER.trace("Setting container to " + container + " from the filename. To prevent false-positives, use MediaInfo=true in the renderer config.");
+						}
+					} else {
+						matchs = false;
+					}
+				} else if (matchs) {
+					if (line.contains("Duration")) {
+						StringTokenizer st = new StringTokenizer(line, ",");
+						while (st.hasMoreTokens()) {
+							String token = st.nextToken().trim();
+							if (token.startsWith("Duration: ")) {
+								String durationStr = token.substring(10);
+								int l = durationStr.substring(durationStr.indexOf('.') + 1).length();
+								if (l < 4) {
+									durationStr += "00".substring(0, 3 - l);
+								}
+								if (durationStr.contains("N/A")) {
+									durationSec = null;
+								} else {
+									durationSec = parseDurationString(durationStr);
+								}
+							} else if (token.startsWith("bitrate: ")) {
+								String bitr = token.substring(9);
+								int spacepos = bitr.indexOf(' ');
+								if (spacepos > -1) {
+									String value = bitr.substring(0, spacepos);
+									String unit = bitr.substring(spacepos + 1);
+									bitrate = Integer.parseInt(value);
+									if (unit.equals("kb/s")) {
+										bitrate = 1024 * bitrate;
+									}
+									if (unit.equals("mb/s")) {
+										bitrate = 1048576 * bitrate;
+									}
+								}
+							}
+						}
+					} else if (line.contains("Audio:")) {
+						StringTokenizer st = new StringTokenizer(line, ",");
+						int a = line.indexOf('(');
+						int b = line.indexOf("):", a);
+						DLNAMediaAudio audio = new DLNAMediaAudio();
+						audio.setId(langId++);
+						if (a > -1 && b > a) {
+							audio.setLang(line.substring(a + 1, b));
+						} else {
+							audio.setLang(DLNAMediaLang.UND);
+						}
+
+						// Get TS IDs
+						a = line.indexOf("[0x");
+						b = line.indexOf(']', a);
+						if (a > -1 && b > a + 3) {
+							String idString = line.substring(a + 3, b);
+							try {
+								audio.setId(Integer.parseInt(idString, 16));
+							} catch (NumberFormatException nfe) {
+								LOGGER.debug("Error parsing Stream ID: " + idString);
+							}
+						}
+
+						while (st.hasMoreTokens()) {
+							String token = st.nextToken().trim();
+							if (token.startsWith("Stream")) {
+								audio.setCodecA(token.substring(token.indexOf("Audio: ") + 7));
+							} else if (token.endsWith("Hz")) {
+								audio.setSampleFrequency(token.substring(0, token.indexOf("Hz")).trim());
+							} else if (token.equals("mono")) {
+								audio.getAudioProperties().setNumberOfChannels(1);
+							} else if (token.equals("stereo")) {
+								audio.getAudioProperties().setNumberOfChannels(2);
+							} else if (token.equals("5:1") || token.equals("5.1") || token.equals("6 channels")) {
+								audio.getAudioProperties().setNumberOfChannels(6);
+							} else if (token.equals("5 channels")) {
+								audio.getAudioProperties().setNumberOfChannels(5);
+							} else if (token.equals("4 channels")) {
+								audio.getAudioProperties().setNumberOfChannels(4);
+							} else if (token.equals("2 channels")) {
+								audio.getAudioProperties().setNumberOfChannels(2);
+							} else if (token.equals("s32")) {
+								audio.setBitsperSample(32);
+							} else if (token.equals("s24")) {
+								audio.setBitsperSample(24);
+							} else if (token.equals("s16")) {
+								audio.setBitsperSample(16);
+							}
+						}
+						int FFmpegMetaDataNr = FFmpegMetaData.nextIndex();
+
+						if (FFmpegMetaDataNr > -1) {
+							line = lines.get(FFmpegMetaDataNr);
+						}
+
+						if (line.contains("Metadata:")) {
+							FFmpegMetaDataNr += 1;
+							line = lines.get(FFmpegMetaDataNr);
+							while (line.indexOf("      ") == 0) {
+								if (line.toLowerCase().contains("title           :")) {
+									int aa = line.indexOf(": ");
+									int bb = line.length();
+									if (aa > -1 && bb > aa) {
+										audio.setAudioTrackTitleFromMetadata(line.substring(aa + 2, bb));
+										break;
+									}
+								} else {
+									FFmpegMetaDataNr += 1;
+									line = lines.get(FFmpegMetaDataNr);
+								}
+							}
+						}
+
+						audioTracks.add(audio);
+					} else if (line.contains("Video:")) {
+						StringTokenizer st = new StringTokenizer(line, ",");
+						while (st.hasMoreTokens()) {
+							String token = st.nextToken().trim();
+							if (token.startsWith("Stream")) {
+								codecV = token.substring(token.indexOf("Video: ") + 7);
+								videoTrackCount++;
+							} else if ((token.contains("tbc") || token.contains("tb(c)"))) {
+								// A/V sync issues with newest FFmpeg, due to the new tbr/tbn/tbc outputs
+								// Priority to tb(c)
+								String frameRateDoubleString = token.substring(0, token.indexOf("tb")).trim();
+								try {
+									if (!frameRateDoubleString.equals(frameRate)) {// tbc taken into account only if different than tbr
+										Double frameRateDouble = Double.parseDouble(frameRateDoubleString);
+										frameRate = String.format(Locale.ENGLISH, "%.2f", frameRateDouble / 2);
+									}
+								} catch (NumberFormatException nfe) {
+									// Could happen if tbc is "1k" or something like that, no big deal
+									LOGGER.debug("Could not parse frame rate \"" + frameRateDoubleString + "\"");
+								}
+
+							} else if ((token.contains("tbr") || token.contains("tb(r)")) && frameRate == null) {
+								frameRate = token.substring(0, token.indexOf("tb")).trim();
+							} else if ((token.contains("fps") || token.contains("fps(r)")) && frameRate == null) { // dvr-ms ?
+								frameRate = token.substring(0, token.indexOf("fps")).trim();
+							} else if (token.indexOf('x') > -1 && !token.contains("max")) {
+								String resolution = token.trim();
+								if (resolution.contains(" [")) {
+									resolution = resolution.substring(0, resolution.indexOf(" ["));
+								}
+								try {
+									width = Integer.parseInt(resolution.substring(0, resolution.indexOf('x')));
+								} catch (NumberFormatException nfe) {
+									LOGGER.debug("Could not parse width from \"" + resolution.substring(0, resolution.indexOf('x')) + "\"");
+								}
+								try {
+									height = Integer.parseInt(resolution.substring(resolution.indexOf('x') + 1));
+								} catch (NumberFormatException nfe) {
+									LOGGER.debug("Could not parse height from \"" + resolution.substring(resolution.indexOf('x') + 1) + "\"");
+								}
+							}
+						}
+					} else if (line.contains("Subtitle:")) {
+						DLNAMediaSubtitle lang = new DLNAMediaSubtitle();
+
+						// $ ffmpeg -codecs | grep "^...S"
+						// ..S... = Subtitle codec
+						// DES... ass                  ASS (Advanced SSA) subtitle
+						// DES... dvb_subtitle         DVB subtitles (decoders: dvbsub ) (encoders: dvbsub )
+						// ..S... dvb_teletext         DVB teletext
+						// DES... dvd_subtitle         DVD subtitles (decoders: dvdsub ) (encoders: dvdsub )
+						// ..S... eia_608              EIA-608 closed captions
+						// D.S... hdmv_pgs_subtitle    HDMV Presentation Graphic Stream subtitles (decoders: pgssub )
+						// D.S... jacosub              JACOsub subtitle
+						// D.S... microdvd             MicroDVD subtitle
+						// DES... mov_text             MOV text
+						// D.S... mpl2                 MPL2 subtitle
+						// D.S... pjs                  PJS (Phoenix Japanimation Society) subtitle
+						// D.S... realtext             RealText subtitle
+						// D.S... sami                 SAMI subtitle
+						// DES... srt                  SubRip subtitle with embedded timing
+						// DES... ssa                  SSA (SubStation Alpha) subtitle
+						// DES... subrip               SubRip subtitle
+						// D.S... subviewer            SubViewer subtitle
+						// D.S... subviewer1           SubViewer v1 subtitle
+						// D.S... text                 raw UTF-8 text
+						// D.S... vplayer              VPlayer subtitle
+						// D.S... webvtt               WebVTT subtitle
+						// DES... xsub                 XSUB
+
+						if (line.contains("srt") || line.contains("subrip")) {
+							lang.setType(SubtitleType.SUBRIP);
+						} else if (line.contains(" text")) {
+							// excludes dvb_teletext, mov_text, realtext
+							lang.setType(SubtitleType.TEXT);
+						} else if (line.contains("microdvd")) {
+							lang.setType(SubtitleType.MICRODVD);
+						} else if (line.contains("sami")) {
+							lang.setType(SubtitleType.SAMI);
+						} else if (line.contains("ass") || line.contains("ssa")) {
+							lang.setType(SubtitleType.ASS);
+						} else if (line.contains("dvd_subtitle")) {
+							lang.setType(SubtitleType.VOBSUB);
+						} else if (line.contains("xsub")) {
+							lang.setType(SubtitleType.DIVX);
+						} else if (line.contains("mov_text")) {
+							lang.setType(SubtitleType.TX3G);
+						} else if (line.contains("webvtt")) {
+							lang.setType(SubtitleType.WEBVTT);
+						} else {
+							lang.setType(SubtitleType.UNKNOWN);
+						}
+
+						int a = line.indexOf('(');
+						int b = line.indexOf("):", a);
+						if (a > -1 && b > a) {
+							lang.setLang(line.substring(a + 1, b));
+						} else {
+							lang.setLang(DLNAMediaLang.UND);
+						}
+
+						lang.setId(subId++);
+						int FFmpegMetaDataNr = FFmpegMetaData.nextIndex();
+
+						if (FFmpegMetaDataNr > -1) {
+							line = lines.get(FFmpegMetaDataNr);
+						}
+
+						if (line.contains("Metadata:")) {
+							FFmpegMetaDataNr += 1;
+							line = lines.get(FFmpegMetaDataNr);
+
+							while (line.indexOf("      ") == 0) {
+								if (line.toLowerCase().contains("title           :")) {
+									int aa = line.indexOf(": ");
+									int bb = line.length();
+									if (aa > -1 && bb > aa) {
+										lang.setSubtitlesTrackTitleFromMetadata(line.substring(aa + 2, bb));
+										break;
+									}
+								} else {
+									FFmpegMetaDataNr += 1;
+									line = lines.get(FFmpegMetaDataNr);
+								}
+							}
+						}
+						subtitleTracks.add(lang);
+					}
+				}
+			}
+		}
+		ffmpegparsed = true;
+	}
+
 	public boolean isH264() {
-		return getCodecV() != null && getCodecV().contains("264");
+		return codecV != null && codecV.startsWith("h264");
+	}
+
+	/**
+	 * Disable LPCM transcoding for MP4 container with non-H264 video as workaround for MEncoder's A/V sync bug
+	 */
+	public boolean isValidForLPCMTranscoding() {
+		if (container != null) {
+			if (container.equals("mp4")) {
+				return isH264();
+			} else {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	public int getFrameNumbers() {
-		double fr = Double.parseDouble(getFrameRate());
+		double fr = Double.parseDouble(frameRate);
 		return (int) (getDurationInSeconds() * fr);
 	}
 
@@ -1136,47 +1326,71 @@ public class DLNAMediaInfo implements Cloneable {
 
 	public void finalize(int type, InputFile f) {
 		String codecA = null;
-		String codecV = getCodecV();
-		String container = getContainer();
-
 		if (getFirstAudioTrack() != null) {
 			codecA = getFirstAudioTrack().getCodecA();
 		}
 
-		if (container != null && container.equals("avi")) {
-			setMimeType(HTTPResource.AVI_TYPEMIME);
-		} else if (container != null && (container.equals("asf") || container.equals("wmv"))) {
-			setMimeType(HTTPResource.WMV_TYPEMIME);
-		} else if (container != null && (container.equals("matroska") || container.equals("mkv"))) {
-			setMimeType(HTTPResource.MATROSKA_TYPEMIME);
-		} else if (codecV != null && codecV.equals("mjpeg")) {
-			setMimeType(HTTPResource.JPEG_TYPEMIME);
-		} else if ("png".equals(codecV) || "png".equals(container)) {
-			setMimeType(HTTPResource.PNG_TYPEMIME);
-		} else if ("gif".equals(codecV) || "gif".equals(container)) {
-			setMimeType(HTTPResource.GIF_TYPEMIME);
-		} else if (codecV != null && (codecV.equals("h264") || codecV.equals("h263") || codecV.toLowerCase().equals("mpeg4") || codecV.toLowerCase().equals("mp4"))) {
-			setMimeType(HTTPResource.MP4_TYPEMIME);
-		} else if (codecV != null && (codecV.indexOf("mpeg") > -1 || codecV.indexOf("mpg") > -1)) {
-			setMimeType(HTTPResource.MPEG_TYPEMIME);
-		} else if (codecV == null && codecA != null && codecA.contains("mp3")) {
-			setMimeType(HTTPResource.AUDIO_MP3_TYPEMIME);
-		} else if (codecV == null && codecA != null && codecA.contains("aac")) {
-			setMimeType(HTTPResource.AUDIO_MP4_TYPEMIME);
-		} else if (codecV == null && codecA != null && codecA.contains("flac")) {
-			setMimeType(HTTPResource.AUDIO_FLAC_TYPEMIME);
-		} else if (codecV == null && codecA != null && codecA.contains("vorbis")) {
-			setMimeType(HTTPResource.AUDIO_OGG_TYPEMIME);
-		} else if (codecV == null && codecA != null && (codecA.contains("asf") || codecA.startsWith("wm"))) {
-			setMimeType(HTTPResource.AUDIO_WMA_TYPEMIME);
-		} else if (codecV == null && codecA != null && (codecA.startsWith("pcm") || codecA.contains("wav"))) {
-			setMimeType(HTTPResource.AUDIO_WAV_TYPEMIME);
-		} else {
-			setMimeType(HTTPResource.getDefaultMimeType(type));
+		if (container != null) {
+			switch (container) {
+				case "avi":
+					mimeType = HTTPResource.AVI_TYPEMIME;
+					break;
+				case "asf":
+				case "wmv":
+					mimeType = HTTPResource.WMV_TYPEMIME;
+					break;
+				case "matroska":
+				case "mkv":
+					mimeType = HTTPResource.MATROSKA_TYPEMIME;
+					break;
+				case "3gp":
+					mimeType = HTTPResource.THREEGPP_TYPEMIME;
+					break;
+				case "3g2":
+					mimeType = HTTPResource.THREEGPP2_TYPEMIME;
+					break;
+				case "mov":
+					mimeType = HTTPResource.MOV_TYPEMIME;
+					break;
+			}
+		}
+
+		if (mimeType == null) {
+			if (codecV != null) {
+				if (codecV.equals("mjpeg") || "jpg".equals(container)) {
+					mimeType = HTTPResource.JPEG_TYPEMIME;
+				} else if ("png".equals(codecV) || "png".equals(container)) {
+					mimeType = HTTPResource.PNG_TYPEMIME;
+				} else if ("gif".equals(codecV) || "gif".equals(container)) {
+					mimeType = HTTPResource.GIF_TYPEMIME;
+				} else if (codecV.startsWith("h264") || codecV.equals("h263") || codecV.toLowerCase().equals("mpeg4") || codecV.toLowerCase().equals("mp4")) {
+					mimeType = HTTPResource.MP4_TYPEMIME;
+				} else if (codecV.contains("mpeg") || codecV.contains("mpg")) {
+					mimeType = HTTPResource.MPEG_TYPEMIME;
+				}
+			} else if (codecV == null && codecA != null) {
+				if (codecA.contains("mp3")) {
+					mimeType = HTTPResource.AUDIO_MP3_TYPEMIME;
+				} else if (codecA.contains("aac")) {
+					mimeType = HTTPResource.AUDIO_MP4_TYPEMIME;
+				} else if (codecA.contains("flac")) {
+					mimeType = HTTPResource.AUDIO_FLAC_TYPEMIME;
+				} else if (codecA.contains("vorbis")) {
+					mimeType = HTTPResource.AUDIO_OGG_TYPEMIME;
+				} else if (codecA.contains("asf") || codecA.startsWith("wm")) {
+					mimeType = HTTPResource.AUDIO_WMA_TYPEMIME;
+				} else if (codecA.startsWith("pcm") || codecA.contains("wav")) {
+					mimeType = HTTPResource.AUDIO_WAV_TYPEMIME;
+				}
+			}
+
+			if (mimeType == null) {
+				mimeType = HTTPResource.getDefaultMimeType(type);
+			}
 		}
 
 		if (getFirstAudioTrack() == null || !(type == Format.AUDIO && getFirstAudioTrack().getBitsperSample() == 24 && getFirstAudioTrack().getSampleRate() > 48000)) {
-			setSecondaryFormatValid(false);
+			secondaryFormatValid = false;
 		}
 
 		// Check for external subs here
@@ -1191,14 +1405,14 @@ public class DLNAMediaInfo implements Cloneable {
 	 */
 	public synchronized boolean isVideoWithinH264LevelLimits(InputFile f, RendererConfiguration mediaRenderer) {
 		if (!h264_parsed) {
-			if ("h264".equals(getCodecV())) {
+			if (isH264()) {
 				if (
-					getContainer() != null &&
+					container != null &&
 					(
-						getContainer().equals("matroska") ||
-						getContainer().equals("mkv") ||
-						getContainer().equals("mov") ||
-						getContainer().equals("mp4")
+						container.equals("matroska") ||
+						container.equals("mkv") ||
+						container.equals("mov") ||
+						container.equals("mp4")
 					)
 				) { // Containers without h264_annexB
 					byte headers[][] = getAnnexBFrameHeader(f);
@@ -1207,27 +1421,27 @@ public class DLNAMediaInfo implements Cloneable {
 					}
 
 					if (headers != null) {
-						setH264AnnexB(headers[1]);
-						if (getH264AnnexB() != null) {
+						h264_annexB = headers[1];
+						if (h264_annexB != null) {
 							int skip = 5;
-							if (getH264AnnexB()[2] == 1) {
+							if (h264_annexB[2] == 1) {
 								skip = 4;
 							}
-							byte header[] = new byte[getH264AnnexB().length - skip];
-							System.arraycopy(getH264AnnexB(), skip, header, 0, header.length);
+							byte header[] = new byte[h264_annexB.length - skip];
+							System.arraycopy(h264_annexB, skip, header, 0, header.length);
 
 							if (
-								getReferenceFrameCount() > -1 &&
+								referenceFrameCount > -1 &&
 								(
-									"4.1".equals(getAvcLevel()) ||
-									"4.2".equals(getAvcLevel()) ||
-									"5".equals(getAvcLevel()) ||
-									"5.0".equals(getAvcLevel()) ||
-									"5.1".equals(getAvcLevel()) ||
-									"5.2".equals(getAvcLevel())
+									"4.1".equals(avcLevel) ||
+									"4.2".equals(avcLevel) ||
+									"5".equals(avcLevel) ||
+									"5.0".equals(avcLevel) ||
+									"5.1".equals(avcLevel) ||
+									"5.2".equals(avcLevel)
 								) &&
-								getWidth() > 0 &&
-								getHeight() > 0
+								width > 0 &&
+								height > 0
 							) {
 								int maxref;
 								if (mediaRenderer == null || mediaRenderer.isPS3()) {
@@ -1237,20 +1451,20 @@ public class DLNAMediaInfo implements Cloneable {
 									 *    - 11 for 1280x720
 									 * Meaning this math is correct
 									 */
-									maxref = (int) Math.floor(10252743 / (getWidth() * getHeight()));
+									maxref = (int) Math.floor(10252743 / (double) (width * height));
 								} else {
 									/**
 									 * This is the math for level 4.1, which results in:
 									 *    - 4 for 1920x1080
 									 *    - 9 for 1280x720
 									 */
-									maxref = (int) Math.floor(8388608 / (getWidth() * getHeight()));
+									maxref = (int) Math.floor(8388608 / (double) (width * height));
 								}
 
-								if (getReferenceFrameCount() > maxref) {
-									LOGGER.debug("The file " + f.getFilename() + " is not compatible with this renderer because it can only take " + maxref + " reference frames at this resolution while this file has " + getReferenceFrameCount() + " reference frames");
+								if (referenceFrameCount > maxref) {
+									LOGGER.debug("The file " + f.getFilename() + " is not compatible with this renderer because it can only take " + maxref + " reference frames at this resolution while this file has " + referenceFrameCount + " reference frames");
 									return false;
-								} else if (getReferenceFrameCount() == -1) {
+								} else if (referenceFrameCount == -1) {
 									LOGGER.debug("The file " + f.getFilename() + " may not be compatible with this renderer because we can't get its number of reference frames");
 									return false;
 								}
@@ -1283,38 +1497,73 @@ public class DLNAMediaInfo implements Cloneable {
 	public String toString() {
 		StringBuilder result = new StringBuilder();
 		result.append("container: ");
-		result.append(getContainer());
+		result.append(container);
 		result.append(", bitrate: ");
-		result.append(getBitrate());
+		result.append(bitrate);
 		result.append(", size: ");
-		result.append(getSize());
+		result.append(size);
+		if (videoTrackCount > 0) {
+			result.append(", video tracks: ");
+			result.append(videoTrackCount);
+		}
+		if (getAudioTrackCount() > 0) {
+			result.append(", audio tracks: ");
+			result.append(getAudioTrackCount());
+		}
+		if (imageCount > 0) {
+			result.append(", images: ");
+			result.append(imageCount);
+		}
+		if (getSubTrackCount() > 0) {
+			result.append(", subtitle tracks: ");
+			result.append(getSubTrackCount());
+		}
 		result.append(", video codec: ");
-		result.append(getCodecV());
+		result.append(codecV);
 		result.append(", duration: ");
 		result.append(getDurationString());
 		result.append(", width: ");
-		result.append(getWidth());
+		result.append(width);
 		result.append(", height: ");
-		result.append(getHeight());
+		result.append(height);
 		result.append(", frame rate: ");
-		result.append(getFrameRate());
+		result.append(frameRate);
 
-		if (getThumb() != null) {
-			result.append(", thumb size : ");
-			result.append(getThumb().length);
+		if (thumb != null) {
+			result.append(", thumb size: ");
+			result.append(thumb.length);
+		}
+		if (isNotBlank(muxingMode)) {
+			result.append(", muxing mode: ");
+			result.append(muxingMode);
 		}
 
-		result.append(", muxing mode: ");
-		result.append(getMuxingMode());
 		result.append(", mime type: ");
-		result.append(getMimeType());
+		result.append(mimeType);
 
-		for (DLNAMediaAudio audio : getAudioTracksList()) {
+		if (isNotBlank(matrixCoefficients)) {
+			result.append(", matrix coefficients: ");
+			result.append(matrixCoefficients);
+		}
+
+		result.append(", attached fonts: ");
+		result.append(embeddedFontExists);
+
+		if (isNotBlank(fileTitleFromMetadata)) {
+			result.append(", file title from metadata: ");
+			result.append(fileTitleFromMetadata);
+		}
+		if (isNotBlank(videoTrackTitleFromMetadata)) {
+			result.append(", video track title from metadata: ");
+			result.append(videoTrackTitleFromMetadata);
+		}
+
+		for (DLNAMediaAudio audio : audioTracks) {
 			result.append("\n\tAudio track ");
 			result.append(audio.toString());
 		}
 
-		for (DLNAMediaSubtitle sub : getSubtitleTracksList()) {
+		for (DLNAMediaSubtitle sub : subtitleTracks) {
 			result.append("\n\tSubtitle track ");
 			result.append(sub.toString());
 		}
@@ -1323,15 +1572,15 @@ public class DLNAMediaInfo implements Cloneable {
 	}
 
 	public InputStream getThumbnailInputStream() {
-		return new ByteArrayInputStream(getThumb());
+		return new ByteArrayInputStream(thumb);
 	}
 
 	public String getValidFps(boolean ratios) {
 		String validFrameRate = null;
 
-		if (getFrameRate() != null && getFrameRate().length() > 0) {
+		if (frameRate != null && frameRate.length() > 0) {
 			try {
-				double fr = Double.parseDouble(getFrameRate().replace(',', '.'));
+				double fr = Double.parseDouble(frameRate.replace(',', '.'));
 
 				if (fr >= 14.99 && fr < 15.1) {
 					validFrameRate = "15";
@@ -1363,17 +1612,38 @@ public class DLNAMediaInfo implements Cloneable {
 	}
 
 	public DLNAMediaAudio getFirstAudioTrack() {
-		if (getAudioTracksList().size() > 0) {
-			return getAudioTracksList().get(0);
+		if (audioTracks.size() > 0) {
+			return audioTracks.get(0);
 		}
 		return null;
 	}
 
+	/**
+	 * @deprecated use getAspectRatioMencoderMpegopts() for the original
+	 * functionality of this method, or use getAspectRatioContainer() for a
+	 * better default method to get aspect ratios.
+	 */
+	@Deprecated
 	public String getValidAspect(boolean ratios) {
+		return getAspectRatioMencoderMpegopts(ratios);
+	}
+
+	/**
+	 * Converts the result of getAspectRatioDvdIso() to provide
+	 * MEncoderVideo with a valid value for the "vaspect" option in the
+	 * "-mpegopts" command.
+	 *
+	 * Note: Our code never uses a false value for "ratios", so unless any
+	 * plugins rely on it we can simplify things by removing that parameter.
+	 *
+	 * @param ratios
+	 * @return
+	 */
+	public String getAspectRatioMencoderMpegopts(boolean ratios) {
 		String a = null;
 
-		if (getAspect() != null) {
-			double ar = Double.parseDouble(getAspect());
+		if (aspectRatioDvdIso != null) {
+			double ar = Double.parseDouble(aspectRatioDvdIso);
 
 			if (ar > 1.7 && ar < 1.8) {
 				a = ratios ? "16/9" : "1.777777777777777";
@@ -1388,33 +1658,33 @@ public class DLNAMediaInfo implements Cloneable {
 	}
 
 	public String getResolution() {
-		if (getWidth() > 0 && getHeight() > 0) {
-			return getWidth() + "x" + getHeight();
+		if (width > 0 && height > 0) {
+			return width + "x" + height;
 		}
 
 		return null;
 	}
 
 	public int getRealVideoBitrate() {
-		if (getBitrate() > 0) {
-			return (getBitrate() / 8);
+		if (bitrate > 0) {
+			return (bitrate / 8);
 		}
 
 		int realBitrate = 10000000;
 
 		if (getDurationInSeconds() != 0) {
-			realBitrate = (int) (getSize() / getDurationInSeconds());
+			realBitrate = (int) (size / getDurationInSeconds());
 		}
 
 		return realBitrate;
 	}
 
 	public boolean isHDVideo() {
-		return (getWidth() > 1200 || getHeight() > 700);
+		return (width > 864 || height > 540);
 	}
 
 	public boolean isMpegTS() {
-		return getContainer() != null && getContainer().equals("mpegts");
+		return container != null && container.equals("mpegts");
 	}
 
 	public byte[][] getAnnexBFrameHeader(InputFile f) {
@@ -1524,13 +1794,13 @@ public class DLNAMediaInfo implements Cloneable {
 			DLNAMediaInfo mediaCloned = ((DLNAMediaInfo) cloned);
 			mediaCloned.setAudioTracksList(new ArrayList<DLNAMediaAudio>());
 
-			for (DLNAMediaAudio audio : getAudioTracksList()) {
+			for (DLNAMediaAudio audio : audioTracks) {
 				mediaCloned.getAudioTracksList().add((DLNAMediaAudio) audio.clone());
 			}
 
 			mediaCloned.setSubtitleTracksList(new ArrayList<DLNAMediaSubtitle>());
 
-			for (DLNAMediaSubtitle sub : getSubtitleTracksList()) {
+			for (DLNAMediaSubtitle sub : subtitleTracks) {
 				mediaCloned.getSubtitleTracksList().add((DLNAMediaSubtitle) sub.clone());
 			}
 		}
@@ -1651,36 +1921,70 @@ public class DLNAMediaInfo implements Cloneable {
 	}
 
 	/**
+	 * @deprecated use getAspectRatioDvdIso() for the original
+	 * functionality of this method, or use getAspectRatioContainer() for a
+	 * better default method to get aspect ratios.
+	 */
+	@Deprecated
+	public String getAspect() {
+		return getAspectRatioDvdIso();
+	}
+
+	/**
+	 * The aspect ratio for a DVD ISO video track
+	 *
 	 * @return the aspect
 	 * @since 1.50.0
 	 */
-	public String getAspect() {
-		return aspect;
+	public String getAspectRatioDvdIso() {
+		return aspectRatioDvdIso;
+	}
+
+	/**
+	 * @deprecated use setAspectRatioDvdIso() for the original
+	 * functionality of this method, or use setAspectRatioContainer() for a
+	 * better default method to set aspect ratios.
+	 */
+	@Deprecated
+	public void setAspect(String aspect) {
+		setAspectRatioDvdIso(aspect);
 	}
 
 	/**
 	 * @param aspect the aspect to set
 	 * @since 1.50.0
 	 */
-	public void setAspect(String aspect) {
-		this.aspect = aspect;
+	public void setAspectRatioDvdIso(String aspect) {
+		this.aspectRatioDvdIso = aspect;
 	}
 
 	/**
-	 * @return the aspect ratio reported by the container
+	 * Get the aspect ratio reported by the file/container.
+	 * This is the aspect ratio that the renderer should display the video
+	 * at, and is usually the same as the video track aspect ratio.
+	 *
+	 * @return the aspect ratio reported by the file/container
 	 */
 	public String getAspectRatioContainer() {
 		return aspectRatioContainer;
 	}
 
 	/**
+	 * Set the aspect ratio reported by the file/container.
+	 *
+	 * @see #getAspectRatioContainer()
 	 * @param aspect the aspect ratio to set
 	 */
 	public void setAspectRatioContainer(String aspect) {
-		this.aspectRatioContainer = aspect;
+		this.aspectRatioContainer = getFormattedAspectRatio(aspect);
 	}
 
 	/**
+	 * Get the aspect ratio of the video track.
+	 * This is the actual aspect ratio of the pixels, which is not
+	 * always the aspect ratio that the renderer should display or that we
+	 * should output; that is {@link #getAspectRatioContainer()}
+	 *
 	 * @return the aspect ratio of the video track
 	 */
 	public String getAspectRatioVideoTrack() {
@@ -1691,7 +1995,35 @@ public class DLNAMediaInfo implements Cloneable {
 	 * @param aspect the aspect ratio to set
 	 */
 	public void setAspectRatioVideoTrack(String aspect) {
-		this.aspectRatioVideoTrack = aspect;
+		this.aspectRatioVideoTrack = getFormattedAspectRatio(aspect);
+	}
+
+	/**
+	 * Make sure the aspect ratio is formatted, e.g. 16:9 not 1.78
+	 *
+	 * @param aspect the possibly-unformatted aspect ratio
+	 *
+	 * @return the formatted aspect ratio or null
+	 */
+	public String getFormattedAspectRatio(String aspect) {
+		if (isBlank(aspect)) {
+			return null;
+		} else {
+			if (aspect.contains(":")) {
+				return aspect;
+			} else {
+				double exactAspectRatio = Double.parseDouble(aspect);
+				if (exactAspectRatio > 1.7 && exactAspectRatio <= 1.8) {
+					return "16:9";
+				} else if (exactAspectRatio > 1.3 && exactAspectRatio < 1.4) {
+					return "4:3";
+				} else if (exactAspectRatio > 1.2 && exactAspectRatio < 1.3) {
+					return "5:4";
+				} else {
+					return null;
+				}
+			}
+		}
 	}
 
 	/**
@@ -1732,6 +2064,38 @@ public class DLNAMediaInfo implements Cloneable {
 
 	public void setMatrixCoefficients(String matrixCoefficients) {
 		this.matrixCoefficients = matrixCoefficients;
+	}
+
+	/**
+	 * @return whether the file container has custom fonts attached.
+	 */
+	public boolean isEmbeddedFontExists() {
+		return embeddedFontExists;
+	}
+
+	/**
+	 * Sets whether the file container has custom fonts attached.
+	 *
+	 * @param exists true if at least one attached font exists
+	 */
+	public void setEmbeddedFontExists(boolean exists) {
+		this.embeddedFontExists = exists;
+	}
+
+	public String getFileTitleFromMetadata() {
+		return fileTitleFromMetadata;
+	}
+
+	public void setFileTitleFromMetadata(String value) {
+		this.fileTitleFromMetadata = value;
+	}
+
+	public String getVideoTrackTitleFromMetadata() {
+		return videoTrackTitleFromMetadata;
+	}
+
+	public void setVideoTrackTitleFromMetadata(String value) {
+		this.videoTrackTitleFromMetadata = value;
 	}
 
 	/**
@@ -1784,6 +2148,18 @@ public class DLNAMediaInfo implements Cloneable {
 	public synchronized void setAvcLevel(String avcLevel) {
 		this.avcLevel = avcLevel;
 	}
+
+	public synchronized int getAvcAsInt() {
+		try {
+			return Integer.parseInt(getAvcLevel().replaceAll("\\.", ""));
+		} catch (Exception e) {
+			return 0;
+		}
+	}
+
+	public synchronized String getH264Profile() { return h264Profile; }
+
+	public synchronized void setH264Profile(String s) { h264Profile = s; }
 
 	/**
 	 * @return the audioTracks
@@ -2009,6 +2385,10 @@ public class DLNAMediaInfo implements Cloneable {
 		this.mediaparsed = mediaparsed;
 	}
 
+	public boolean isFFmpegparsed() {
+		return ffmpegparsed;
+	}
+
 	/**
 	 * @return the thumbready
 	 * @since 1.50.0
@@ -2091,12 +2471,169 @@ public class DLNAMediaInfo implements Cloneable {
 
 	public boolean isMod4() {
 		if (
-			getHeight() % 4 != 0 ||
-			getWidth() % 4 != 0
+			height % 4 != 0 ||
+			width % 4 != 0
 		) {
 			return false;
 		}
 
 		return true;
+	}
+
+	/**
+	 * Note: This is based on a flag in Matroska files, and as such it is
+	 * unreliable; it will be unlikely to find a false-positive but there
+	 * will be false-negatives, similar to language flags.
+	 *
+	 * @return whether the video track is 3D
+	 */
+	public boolean is3d() {
+		return isNotBlank(stereoscopy);
+	}
+
+	/**
+	 * The significance of this is that the aspect ratio should not be kept
+	 * in this case when transcoding.
+	 * Example: 3840x1080 should be resized to 1920x1080, not 1920x540.
+	 *
+	 * @return whether the video track is full SBS or OU 3D
+	 */
+	public boolean is3dFullSbsOrOu() {
+		if (!is3d()) {
+			return false;
+		}
+
+		switch (stereoscopy) {
+			case "overunderrt":
+			case "OULF":
+			case "OURF":
+			case "SBSLF":
+			case "SBSRF":
+			case "top-bottom (left eye first)":
+			case "top-bottom (right eye first)":
+			case "side by side (left eye first)":
+			case "side by side (right eye first)":
+				return true;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Note: This is based on a flag in Matroska files, and as such it is
+	 * unreliable; it will be unlikely to find a false-positive but there
+	 * will be false-negatives, similar to language flags.
+	 *
+	 * @return the type of stereoscopy (3D) of the video track
+	 */
+	public String getStereoscopy() {
+		return stereoscopy;
+	}
+
+	/**
+	 * Sets the type of stereoscopy (3D) of the video track.
+	 *
+	 * Note: This is based on a flag in Matroska files, and as such it is
+	 * unreliable; it will be unlikely to find a false-positive but there
+	 * will be false-negatives, similar to language flags.
+	 *
+	 * @param stereoscopy the type of stereoscopy (3D) of the video track
+	 */
+	public void setStereoscopy(String stereoscopy) {
+		this.stereoscopy = stereoscopy;
+	}
+
+	/**
+	 * Used by FFmpeg for 3D video format naming
+	 */
+	public enum Mode3D {
+		SBSL,
+		SBSR,
+		HSBSL,
+		OUL,
+		OUR,
+		HOUL,
+		ARCG,
+		ARCH,
+		ARCC,
+		ARCD,
+		AGMG,
+		AGMH,
+		AGMC,
+		AGMD,
+		AYBG,
+		AYBH,
+		AYBC,
+		AYBD
+	};
+
+	public Mode3D get3DLayout() {
+		if (!is3d()) {
+			return null;
+		}
+
+		isAnaglyph = true;
+		switch (stereoscopy) {
+			case "overunderrt":
+			case "OULF":
+			case "top-bottom (left eye first)":
+				isAnaglyph = false;
+				return Mode3D.OUL;
+			case "OURF":
+			case "top-bottom (right eye first)":
+				isAnaglyph = false;
+				return Mode3D.OUR;
+			case "SBSLF":
+			case "side by side (left eye first)":
+				isAnaglyph = false;
+				return Mode3D.SBSL;
+			case "SBSRF":
+			case "side by side (right eye first)":
+				isAnaglyph = false;
+				return Mode3D.SBSR;
+			case "half top-bottom (left eye first)":
+				isAnaglyph = false;
+				return Mode3D.HOUL;
+			case "half side by side (left eye first)":
+				isAnaglyph = false;
+				return Mode3D.HSBSL;
+			case "ARCG":
+				return Mode3D.ARCG;
+			case "ARCH":
+				return Mode3D.ARCH;
+			case "ARCC":
+				return Mode3D.ARCC;
+			case "ARCD":
+				return Mode3D.ARCD;
+			case "AGMG":
+				return Mode3D.AGMG;
+			case "AGMH":
+				return Mode3D.AGMH;
+			case "AGMC":
+				return Mode3D.AGMC;
+			case "AGMD":
+				return Mode3D.AGMD;
+			case "AYBG":
+				return Mode3D.AYBG;
+			case "AYBH":
+				return Mode3D.AYBH;
+			case "AYBC":
+				return Mode3D.AYBC;
+			case "AYBD":
+				return Mode3D.AYBD;
+		}
+
+		return null;
+	}
+
+	private boolean isAnaglyph;
+
+	public boolean stereoscopyIsAnaglyph() {
+		get3DLayout();
+		return isAnaglyph;
+	}
+
+	public boolean isDVDResolution() {
+		return (width == 720 && height == 576) || (width == 720 && height == 480);
 	}
 }

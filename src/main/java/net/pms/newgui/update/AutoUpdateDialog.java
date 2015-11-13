@@ -4,13 +4,16 @@ import java.awt.Dimension;
 import java.awt.Window;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.io.File;
+import java.io.FileNotFoundException;
 import java.util.Observable;
 import java.util.Observer;
 import javax.swing.*;
-import net.pms.PMS;
-import net.pms.configuration.PmsConfiguration;
+import com.sun.jna.Platform;
+import net.pms.Messages;
 import net.pms.update.AutoUpdater;
 import net.pms.update.AutoUpdater.State;
+import net.pms.util.FileUtil;
 
 public class AutoUpdateDialog extends JDialog implements Observer {
 	private static final long serialVersionUID = 3809427933990495309L;
@@ -20,8 +23,6 @@ public class AutoUpdateDialog extends JDialog implements Observer {
 	private JButton cancelButton = new CancelButton();
 	private JProgressBar downloadProgressBar = new JProgressBar();
 	private static AutoUpdateDialog instance;
-	private static final PmsConfiguration configuration = PMS.getConfiguration();
-
 	public synchronized static void showIfNecessary(Window parent, AutoUpdater autoUpdater, boolean isStartup) {
 		if (autoUpdater.isUpdateAvailable() || !isStartup) {
 			if (instance == null) {
@@ -32,7 +33,7 @@ public class AutoUpdateDialog extends JDialog implements Observer {
 	}
 
 	AutoUpdateDialog(Window parent, AutoUpdater autoUpdater) {
-		super(parent, "Universal Media Server Auto Update");
+		super(parent, Messages.getString("AutoUpdate.0"));
 		this.autoUpdater = autoUpdater;
 		autoUpdater.addObserver(this);
 		initComponents();
@@ -47,7 +48,7 @@ public class AutoUpdateDialog extends JDialog implements Observer {
 		private static final long serialVersionUID = 4762020878159496712L;
 
 		DownloadButton() {
-			super("Download");
+			super(Messages.getString("AutoUpdate.10"));
 			setEnabled(false);
 			this.setRequestFocusEnabled(false);
 			addActionListener(this);
@@ -67,7 +68,7 @@ public class AutoUpdateDialog extends JDialog implements Observer {
 		private static final long serialVersionUID = 4762020878159496713L;
 
 		CancelButton() {
-			super("Not Now");
+			super(Messages.getString("AutoUpdate.11"));
 			setEnabled(true);
 			this.setRequestFocusEnabled(false);
 			addActionListener(this);
@@ -136,12 +137,12 @@ public class AutoUpdateDialog extends JDialog implements Observer {
 			case UPDATE_AVAILABLE:
 			case ERROR:
 			case NO_UPDATE_AVAILABLE:
-				cancelButton.setText("Close");
+				cancelButton.setText(Messages.getString("Dialog.Close"));
 				cancelButton.setEnabled(true);
 				cancelButton.setVisible(true);
 				break;
 			case DOWNLOAD_IN_PROGRESS:
-				cancelButton.setText("Cancel");
+				cancelButton.setText(Messages.getString("NetworkTab.45"));
 				cancelButton.setEnabled(true);
 				cancelButton.setVisible(true);
 				break;
@@ -155,46 +156,60 @@ public class AutoUpdateDialog extends JDialog implements Observer {
 	private String getStateText() {
 		switch (autoUpdater.getState()) {
 			case NOTHING_KNOWN:
-				return "Check for updates not started";
+				return Messages.getString("AutoUpdate.1");
 			case DOWNLOAD_FINISHED:
-				return "Download finished";
+				return Messages.getString("AutoUpdate.2");
 			case DOWNLOAD_IN_PROGRESS:
-				return "Download in progress";
+				return Messages.getString("AutoUpdate.3");
 			case ERROR:
 				return getErrorStateText();
 			case NO_UPDATE_AVAILABLE:
-				return "No update available";
+				return Messages.getString("AutoUpdate.4");
 			case POLLING_SERVER:
-				return "Connecting to server";
+				return Messages.getString("AutoUpdate.5");
 			case UPDATE_AVAILABLE:
 				String permissionsReminder = "";
 
-				if (!configuration.isAdmin()) {
-					permissionsReminder = ", but UMS must be run as administrator before updating.";
-					cancelButton.setText("Close");
+				// See if we have write permission in the program folder. We don't necessarily
+				// need admin rights here.
+				File file = new File(System.getProperty("user.dir"));
+				try {
+					if (!FileUtil.getFilePermissions(file).isWritable()) {
+						permissionsReminder = Messages.getString("AutoUpdate.12");
+						if (Platform.isWindows()) {
+							permissionsReminder += "\n" + Messages.getString("AutoUpdate.13");
+						}
+						cancelButton.setText(Messages.getString("Dialog.Close"));
+						okButton.setEnabled(false);
+						okButton.setVisible(false);
+					}
+				} catch (FileNotFoundException e) {
+					// This should never happen
+					permissionsReminder = "\n" + String.format(Messages.getString("TracesTab.21"), file.getAbsolutePath());
+					cancelButton.setText(Messages.getString("Dialog.Close"));
 					okButton.setEnabled(false);
 					okButton.setVisible(false);
 				}
 
-				return "An update is available" + permissionsReminder;
+				return Messages.getString("AutoUpdate.7") + permissionsReminder;
 			default:
-				return "Unknown state";
+				return Messages.getString("AutoUpdate.8");
 		}
 	}
 
 	private String getErrorStateText() {
 		if (autoUpdater == null) {
-			return "No auto updater";
+			return Messages.getString("AutoUpdate.9");
 		}
 
 		Throwable exception = autoUpdater.getErrorStateCause();
 		if (exception == null) {
-			return "Error";
+			return Messages.getString("Dialog.Error");
 		}
 
 		String message = exception.getMessage();
 		if (message == null) {
-			return "Error";
+			return Messages.getString("Dialog.Error");
 		}
 
 		return message;
@@ -202,15 +217,15 @@ public class AutoUpdateDialog extends JDialog implements Observer {
 
 	// Code generated by Matisse
 	private void initComponents() {
-		javax.swing.GroupLayout layout = new javax.swing.GroupLayout(getContentPane());
+		GroupLayout layout = new GroupLayout(getContentPane());
 		getContentPane().setLayout(layout);
 		layout.setHorizontalGroup(
-			layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING).addGroup(layout.createSequentialGroup().addContainerGap().addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING).addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup().addComponent(okButton, javax.swing.GroupLayout.PREFERRED_SIZE, 100, javax.swing.GroupLayout.PREFERRED_SIZE).addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED).addComponent(cancelButton, javax.swing.GroupLayout.PREFERRED_SIZE, 100, javax.swing.GroupLayout.PREFERRED_SIZE)).addComponent(stateLabel).addComponent(downloadProgressBar, javax.swing.GroupLayout.DEFAULT_SIZE, 446, Short.MAX_VALUE)).addContainerGap()));
+			layout.createParallelGroup(GroupLayout.Alignment.LEADING).addGroup(layout.createSequentialGroup().addContainerGap().addGroup(layout.createParallelGroup(GroupLayout.Alignment.LEADING).addGroup(GroupLayout.Alignment.TRAILING, layout.createSequentialGroup().addComponent(okButton, GroupLayout.PREFERRED_SIZE, 100, GroupLayout.PREFERRED_SIZE).addPreferredGap(LayoutStyle.ComponentPlacement.RELATED).addComponent(cancelButton, GroupLayout.PREFERRED_SIZE, 100, GroupLayout.PREFERRED_SIZE)).addComponent(stateLabel).addComponent(downloadProgressBar, GroupLayout.DEFAULT_SIZE, 446, Short.MAX_VALUE)).addContainerGap()));
 
 		layout.linkSize(javax.swing.SwingConstants.HORIZONTAL, new java.awt.Component[]{cancelButton, okButton});
 
 		layout.setVerticalGroup(
-			layout.createParallelGroup(javax.swing.GroupLayout.Alignment.LEADING).addGroup(javax.swing.GroupLayout.Alignment.TRAILING, layout.createSequentialGroup().addContainerGap().addComponent(stateLabel).addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED).addComponent(downloadProgressBar, javax.swing.GroupLayout.PREFERRED_SIZE, javax.swing.GroupLayout.DEFAULT_SIZE, javax.swing.GroupLayout.PREFERRED_SIZE).addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.UNRELATED).addGroup(layout.createParallelGroup(javax.swing.GroupLayout.Alignment.BASELINE).addComponent(okButton).addComponent(cancelButton)).addContainerGap()));
+			layout.createParallelGroup(GroupLayout.Alignment.LEADING).addGroup(GroupLayout.Alignment.TRAILING, layout.createSequentialGroup().addContainerGap().addComponent(stateLabel).addPreferredGap(javax.swing.LayoutStyle.ComponentPlacement.RELATED).addComponent(downloadProgressBar, GroupLayout.PREFERRED_SIZE, GroupLayout.DEFAULT_SIZE, GroupLayout.PREFERRED_SIZE).addPreferredGap(LayoutStyle.ComponentPlacement.UNRELATED).addGroup(layout.createParallelGroup(GroupLayout.Alignment.BASELINE).addComponent(okButton).addComponent(cancelButton)).addContainerGap()));
 
 		pack();
 	}

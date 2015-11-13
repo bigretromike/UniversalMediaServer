@@ -41,7 +41,7 @@ public class ResumeObj {
 	}
 
 	public static ResumeObj create(DLNAResource r) {
-		if (!configuration.isResumeEnabled()) {
+		if (!r.configuration.isResumeEnabled()) {
 			// resume is off bail early
 			return null;
 		}
@@ -59,7 +59,7 @@ public class ResumeObj {
 		if (r.getMedia() != null) {
 			double dur = r.getMedia().getDurationInSeconds();
 			if (dur == 0.0 || dur == DLNAMediaInfo.TRANS_SIZE) {
-				r.getMedia().setDuration(new Double(res.resDuration / 1000.0));
+				r.getMedia().setDuration(res.resDuration / 1000.0);
 			}
 		}
 		res.setMinDuration(r.minPlayTime());
@@ -81,29 +81,26 @@ public class ResumeObj {
 		offsetTime = 0;
 		resDuration = 0;
 		file = f;
-		minDur = configuration.getMinPlayTime();
+		minDur = configuration.getMinimumWatchedPlayTime();
 	}
 
 	public void setMinDuration(long dur) {
 		if (dur == 0) {
-			dur = configuration.getMinPlayTime();
+			dur = configuration.getMinimumWatchedPlayTime();
 		}
 		minDur = dur;
 	}
 
 	public void read() {
-		try {
-			try (BufferedReader in = new BufferedReader(new FileReader(file))) {
-				String str;
-				while ((str = in.readLine()) != null) {
-					String[] tmp = str.split(",");
-					offsetTime = Long.parseLong(tmp[0]);
-					if (tmp.length > 1) {
-						resDuration = Long.parseLong(tmp[1]);
-					}
-					break;
+		try (BufferedReader in = new BufferedReader(new FileReader(file))) {
+			String str;
+			while ((str = in.readLine()) != null) {
+				String[] tmp = str.split(",");
+				offsetTime = Long.parseLong(tmp[0]);
+				if (tmp.length > 1) {
+					resDuration = Long.parseLong(tmp[1]);
 				}
-				in.close();
+				break;
 			}
 		} catch (IOException e) {
 		}
@@ -143,23 +140,27 @@ public class ResumeObj {
 		return !file.exists();
 	}
 
+	public void update(Range.Time range, DLNAResource r) {
+		if (range.isStartOffsetAvailable() && range.getStartOrZero() > 0.0) {
+			stop(System.currentTimeMillis() + getTimeOffset() - (long) (range.getStart() * 1000), (long) ((r.getMedia() != null ? r.getMedia().getDuration() : 0) * 1000));
+		}
+	}
+
 	public void stop(long startTime, long expDuration) {
 		long now = System.currentTimeMillis();
 		long thisPlay = now - startTime;
 		long duration = thisPlay + offsetTime;
 
-		if (expDuration > minDur) {
-			if (duration >= (expDuration * configuration.getResumeBackFactor())) {
-				// We've seen the whole video (likely)
-				file.delete();
-				return;
-			}
+		if (expDuration > minDur && duration >= (expDuration * configuration.getResumeBackFactor())) {
+			// We've seen the whole video (likely)
+			file.delete();
+			return;
 		}
 		if (thisPlay < configuration.getResumeRewind()) {
 			return;
 		}
 		if (thisPlay < minDur) {
-			// to short to resume (at all)
+			// too short to resume (at all)
 			return;
 		}
 

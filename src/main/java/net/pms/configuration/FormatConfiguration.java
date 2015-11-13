@@ -1,6 +1,27 @@
+/*
+ * Universal Media Server, for streaming any medias to DLNA
+ * compatible renderers based on the http://www.ps3mediaserver.org.
+ * Copyright (C) 2012 UMS developers.
+ *
+ * This program is a free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; version 2
+ * of the License only.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+ */
+
 package net.pms.configuration;
 
 import java.util.*;
+import java.util.Map.Entry;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 import net.pms.dlna.DLNAMediaAudio;
@@ -17,15 +38,22 @@ public class FormatConfiguration {
 	private ArrayList<SupportSpec> supportSpecs;
 	// Use old parser for JPEG files (MediaInfo does not support EXIF)
 	private static final String[] PARSER_V1_EXTENSIONS = new String[]{".jpg", ".jpe", ".jpeg"};
+	public static final String THREEGPP = "3gp";
+	public static final String THREEGPP2 = "3g2";
 	public static final String AAC = "aac";
 	public static final String AAC_HE = "aac-he";
 	public static final String AC3 = "ac3";
+	public static final String ADPCM = "adpcm";
+	public static final String ADTS = "adts";
 	public static final String AIFF = "aiff";
 	public static final String ALAC = "alac";
+	public static final String AMR = "amr";
 	public static final String APE = "ape";
 	public static final String ATRAC = "atrac";
 	public static final String AVI = "avi";
 	public static final String BMP = "bmp";
+	public static final String CINEPACK = "cvid";
+	public static final String COOK = "cook";
 	public static final String DIVX = "divx";
 	public static final String DTS = "dts";
 	public static final String DTSHD = "dtshd";
@@ -34,7 +62,9 @@ public class FormatConfiguration {
 	public static final String FLAC = "flac";
 	public static final String FLV = "flv";
 	public static final String GIF = "gif";
+	public static final String H263 = "h263";
 	public static final String H264 = "h264";
+	public static final String H265 = "h265";
 	public static final String JPG = "jpg";
 	public static final String LPCM = "lpcm";
 	public static final String MATROSKA = "mkv";
@@ -53,22 +83,32 @@ public class FormatConfiguration {
 	public static final String MPEGPS = "mpegps";
 	public static final String MPEGTS = "mpegts";
 	public static final String OGG = "ogg";
+	public static final String OPUS = "opus";
 	public static final String PNG = "png";
-	public static final String RA = "ra";
+	public static final String QDESIGN = "qdmc";
+	public static final String REALAUDIO_LOSSLESS = "ralf";
 	public static final String RM = "rm";
 	public static final String SHORTEN = "shn";
+	public static final String SORENSON = "sor";
 	public static final String TIFF = "tiff";
+	public static final String THEORA = "theora";
 	public static final String TRUEHD = "truehd";
+	public static final String TTA = "tta";
 	public static final String VC1 = "vc1";
+	public static final String VORBIS = "vorbis";
+	public static final String VP6 = "vp6";
+	public static final String VP7 = "vp7";
+	public static final String VP8 = "vp8";
+	public static final String VP9 = "vp9";
 	public static final String WAVPACK = "wavpack";
 	public static final String WAV = "wav";
-	public static final String WEBM = "WebM";
+	public static final String WEBM = "webm";
 	public static final String WMA = "wma";
 	public static final String WMV = "wmv";
 	public static final String MIMETYPE_AUTO = "MIMETYPE_AUTO";
 	public static final String und = "und";
 
-	private class SupportSpec {
+	private static class SupportSpec {
 		private int iMaxBitrate = Integer.MAX_VALUE;
 		private int iMaxFrequency = Integer.MAX_VALUE;
 		private int iMaxNbChannels = Integer.MAX_VALUE;
@@ -262,10 +302,10 @@ public class FormatConfiguration {
 			}
 
 			if (extras != null && miExtras != null) {
-				Iterator<String> keyIt = extras.keySet().iterator();
+				Iterator<Entry<String, String>> keyIt = extras.entrySet().iterator();
 				while (keyIt.hasNext()) {
-					String key = keyIt.next();
-					String value = extras.get(key);
+					String key = keyIt.next().getKey();
+					String value = extras.get(key).toLowerCase();
 
 					if (key.equals(MI_QPEL) && miExtras.get(MI_QPEL) != null && !miExtras.get(MI_QPEL).matcher(value).matches()) {
 						LOGGER.trace("Qpel value \"{}\" failed to match support line {}", miExtras.get(MI_QPEL), supportLine);
@@ -305,7 +345,15 @@ public class FormatConfiguration {
 		}
 	}
 
+	@Deprecated
 	public void parse(DLNAMediaInfo media, InputFile file, Format ext, int type) {
+		parse(media, file, ext, type, null);
+	}
+
+	/**
+	 * Chooses which parsing method to parse the file with.
+	 */
+	public void parse(DLNAMediaInfo media, InputFile file, Format ext, int type, RendererConfiguration renderer) {
 		boolean forceV1 = false;
 
 		if (file.getFile() != null) {
@@ -320,13 +368,13 @@ public class FormatConfiguration {
 
 			if (forceV1) {
 				// XXX this path generates thumbnails
-				media.parse(file, ext, type, false);
+				media.parse(file, ext, type, false, false, renderer);
 			} else {
 				// XXX this path doesn't generate thumbnails
-				LibMediaInfoParser.parse(media, file, type);
+				LibMediaInfoParser.parse(media, file, type, renderer);
 			}
 		} else {
-			media.parse(file, ext, type, false);
+			media.parse(file, ext, type, false, false, renderer);
 		}
 	}
 
@@ -358,13 +406,19 @@ public class FormatConfiguration {
 		return match(WAV, null, null, 0, 96000, 0, 0, 0, null) != null || match(MP3, null, null, 0, 96000, 0, 0, 0, null) != null;
 	}
 
+	// XXX Unused
+	@Deprecated
 	public String getPrimaryVideoTranscoder() {
 		for (SupportSpec supportSpec : supportSpecs) {
 			if (supportSpec.match(MPEGPS, MPEG2, AC3)) {
 				return MPEGPS;
 			}
 
-			if (supportSpec.match(MPEGTS, MPEG2, AC3)) {
+			if (
+				supportSpec.match(MPEGTS, MPEG2, AC3) ||
+				supportSpec.match(MPEGTS, H264, AAC) ||
+				supportSpec.match(MPEGTS, H264, AC3)
+			) {
 				return MPEGTS;
 			}
 
